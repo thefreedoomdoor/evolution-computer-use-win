@@ -101,7 +101,18 @@ async function serve(options: Options): Promise<void> {
       else if (mode === 'foreground') log('前台模式已打开');
     });
   }
-  const end = () => { computer.stop(); process.exit(0); };
+  // 用户在 DSH 设置界面里选的前台/后台模式写在这个共享文件里，这里轮询让它即时生效，不用重启。
+  const modeFile = join(homedir(), '.evolution-computer-use', 'desktop-mode.json');
+  const modeTimer = setInterval(() => {
+    let wanted: string | undefined;
+    try { wanted = (JSON.parse(readFileSync(modeFile, 'utf8').replace(/^\uFEFF/, '')) as { desktopMode?: string }).desktopMode; } catch { return; }
+    if (wanted !== 'off' && wanted !== 'background' && wanted !== 'foreground') return;
+    if (wanted === computer.desktopMode()) return;
+    void computer.setDesktopMode(wanted).then(why => { log(why ?? `桌面模式已切换为 ${wanted}（来自设置）`); });
+  }, 800);
+  modeTimer.unref();
+
+  const end = () => { clearInterval(modeTimer); computer.stop(); process.exit(0); };
   process.once('SIGINT', end); process.once('SIGTERM', end);
   await server.closed;
   end();

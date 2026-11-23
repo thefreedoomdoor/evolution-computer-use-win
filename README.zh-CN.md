@@ -228,6 +228,8 @@ dsh-world 在模拟站点上的对比实验：空结果算失败后，不报错�
 
 **运行中切换**（`desktop_mode` 工具 / `setDesktopMode()`）：不用重启就能在 `off`、`background`、`foreground` 之间换。切到前台会弹 UAC 确认，Agent 调工具时必须带 `confirm: true`，没带就只返回一句提醒、不会弹窗；你拒绝了就留在后台，原因记进故障。切回后台会停掉管理员助手，切到 `off` 会把两个助手都停掉、`desktop` 工具消失。宿主想自己做个开关，直接调 `computer.setDesktopMode('background')` 这类方法即可，`onToolsChanged` 会通知你重新注册工具。
 
+**在 DSH 设置界面里切换**：配套的 DSH 插件 `dsh-evolution-desktop-mode` 把 `desktopMode` 做成设置页里的插件配置项（`off` / `background` / `foreground`），并写入 `~/.evolution-computer-use/desktop-mode.json`；这个 MCP 服务器每 0.8 秒读一次该文件，选完立即生效，不用重启。
+
 `desktop` 的 `action`：
 
 | action | 作用 |

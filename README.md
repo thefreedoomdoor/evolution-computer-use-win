@@ -306,6 +306,8 @@ Programs running as administrator (many games) are out of reach; the agent is to
 
 No restart needed: switch between `off`, `background` and `foreground` while the plugin is running. Switching to foreground shows a UAC prompt; when the agent calls the tool it must pass `confirm: true`, otherwise it only gets a reminder and no prompt appears. If you decline, you stay in background and the reason is recorded as a fault. Switching back to background stops the elevated helper; switching to `off` stops both helpers and the `desktop` tool disappears. A host that wants its own switch can call `computer.setDesktopMode('background')`; `onToolsChanged` tells it to register the tools again.
 
+**From the DSH settings page**: the companion DSH plugin `dsh-evolution-desktop-mode` exposes `desktopMode` as a plugin setting (`off` / `background` / `foreground`) and writes `~/.evolution-computer-use/desktop-mode.json`; this MCP server rereads that file every 0.8 s, so a choice takes effect without restarting anything.
+
 `desktop` actions:
 
 | action | What it does |
