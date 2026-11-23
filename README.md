@@ -2,11 +2,11 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Self-evolving computer use for any agent.
+Self-evolving computer use, built for DeepSeek Harness.
 
 > Extracted from **[dsh-world](https://github.com/chenkezhen480/dsh-world)** 0.8, where it was "her own browser and the operations she learned", and freed from the DSH host. How procedures are stored, replayed and repaired was chosen by two controlled experiments run while building dsh-world; see [Experiments](#experiments).
 
-**This repository is the merger of two projects.** [evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use) — the browser of its own, the procedure library, the stop switch — and [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) — the Windows desktop mode and the thought/step overlay in the top-right corner — are now one MCP server, published here as `evolution-computer-use-win`. Both are MIT; see [NOTICE](NOTICE.md).
+**This repository is the merger of two projects.** [evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use) — the browser of its own, the procedure library, the stop switch — and [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) — the Windows desktop mode and the thought/step overlay in the top-right corner — are now one MCP server, published here as `evolution-computer-use-win`. Both are MIT: the merged license is [LICENSE](LICENSE), and third-party code ported from dsh-world and dsh-inner-browser-use is listed in [NOTICE](NOTICE.md).
 
 - **A browser of its own**: the system's Edge (or Chrome) on a separate profile, driven over the DevTools Protocol (CDP). It never uses your mouse or keyboard and never touches your everyday browser.
 - **The user's computer** (Windows, only when the user turns it on):
@@ -25,66 +25,25 @@ No runtime dependencies: the browser side uses only Node's built-in `WebSocket` 
 
 ## Setup
 
-Requires Node.js 22.16 or later. There is nothing to download or build by hand: the configurations below run the [npm package](https://www.npmjs.com/package/evolution-computer-use-win) through `npx`, which fetches it on first use.
+Requires Node.js 22.16 or later. There is nothing to download or build by hand: the command below runs the [npm package](https://www.npmjs.com/package/evolution-computer-use-win) through `npx`, which fetches it on first use.
 
 > The npm name is new: if `evolution-computer-use-win` is not on npm yet, use [From source](#from-source) (or run `npm publish` from a clone). The old `evolution-computer-use` package is the pre-merger release.
 
 `--desktop` defaults to `off` (the agent's own browser only); to let the agent use your computer, pass `background` or `foreground`, as described in [The user's computer](#the-users-computer). It is only the initial state: while running, the agent can switch between off, background and foreground with the `desktop_mode` tool, no restart needed.
 
-On Windows, `npx` is a batch file (`npx.cmd`) that some clients cannot start directly, so the examples start it through `cmd /c`. On macOS and Linux, drop `cmd /c` and make `npx` the command.
+On Windows, `npx` is a batch file (`npx.cmd`) which some hosts cannot start directly, so the Windows command goes through `cmd /c`. On macOS and Linux, drop `cmd /c` and make `npx` the command.
 
-### Claude Code
+### DeepSeek Harness
 
-```powershell
-claude mcp add --scope user evolution-computer-use-win -- cmd /c npx -y evolution-computer-use-win --desktop background
-```
+This server is built for DeepSeek Harness (DSH) and adapted for it only. Two halves make it work there: the stdio MCP server in this repository, and the companion DSH plugin `dsh-evolution-desktop-mode`, which exposes the desktop-mode setting and writes `activity.json` for the thought/step overlay.
 
-`--scope user` makes it available in every project; leave it out to add it to the current project only.
+Add it in DSH as a stdio MCP connection:
 
-It also installs as a plugin, which Claude Code fetches from GitHub with git and runs from source:
-
-```text
-/plugin marketplace add thefreedoomdoor/evolution-computer-use-win
-/plugin install evolution-computer-use-win
-```
-
-The plugin starts with desktop control off. To pass `--desktop`, use `claude mcp add` as above.
-
-### Codex CLI
-
-`~/.codex/config.toml`:
-
-```toml
-[mcp_servers.evolution-computer-use-win]
-command = "cmd"
-args = ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
-# Recording up to two minutes of video, or waiting in the browser queue, can exceed the default 60 s
-tool_timeout_sec = 180
-```
-
-### Cursor, Cline, Windsurf, Claude Desktop and others
-
-These clients take the `mcpServers` form (`.cursor/mcp.json` for Cursor, `claude_desktop_config.json` for Claude Desktop):
-
-```json
-{
-  "mcpServers": {
-    "evolution-computer-use-win": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
-    }
-  }
-}
-```
-
-### Any other MCP agent
-
-Any stdio MCP client works.
-
-- **Command:** `npx -y evolution-computer-use-win [options]`.
+- **Command (Windows):** `cmd /c npx -y evolution-computer-use-win --desktop background`
+- **Command (macOS, Linux):** `npx -y evolution-computer-use-win --desktop background`
 - **Protocol versions:** 2025-06-18, 2025-03-26 and 2024-11-05.
 - **Instructions:** the usage guide is sent in `instructions` at initialization.
-- **Images:** screenshots come back as MCP `image` content. `page_shot` and `desktop` are only useful if the client passes images to the model.
+- **Images:** screenshots come back as MCP `image` content; `page_shot` and `desktop` are only useful if the host passes images to the model.
 
 ### From source
 
@@ -97,7 +56,17 @@ npm install
 npm run build        # builds lib/
 ```
 
-Then, in the configurations above, replace `cmd /c npx -y evolution-computer-use-win` with `node D:/tools/evolution-computer-use-win/lib/cli.js`. A local clone also works as a Claude Code plugin: give its path to `/plugin marketplace add`.
+Then use `node D:/tools/evolution-computer-use-win/lib/cli.js` in place of `cmd /c npx -y evolution-computer-use-win`.
+
+### Not adapted for other agent apps
+
+This project is adapted for DeepSeek Harness only. Claude Code, Codex CLI, Cursor, Cline, Windsurf, Claude Desktop and other MCP clients can start the same command — the server itself speaks plain stdio MCP — but they are neither tested nor supported:
+
+- the desktop-mode switch in the settings page, and the writer half of the thought/step overlay, come from the DSH plugin;
+- the panel's settings page (position, size, opacity, click-through) is a DSH plugin settings page;
+- without them the panel never appears, and any idle helper left behind is yours to clean up; `--no-overlay` skips the overlay half entirely.
+
+The `--desktop` default, the `desktop_mode` tool and the rest of the MCP contract described below still hold, but nothing here is promised to work outside DSH.
 
 ### Embedding in JS/TS
 
@@ -158,7 +127,7 @@ Without a global install (`npm install -g evolution-computer-use-win`), put `npx
 | `--no-messages` | Do not file what procedures read into `messages.jsonl` |
 | `--no-overlay` | Do not start the thought/step overlay at the top right (it starts by default; its look is set in the DSH plugin) |
 
-Faults and recoveries go to stderr (MCP clients usually keep it in their own logs). The agent also sees them when it calls `computer_use` without arguments.
+Faults and recoveries go to stderr (MCP hosts usually keep it in their own logs). The agent also sees them when it calls `computer_use` without arguments.
 
 ## Tools
 
@@ -361,7 +330,7 @@ The split exists because this plugin is a plain stdio MCP server and cannot see 
 - **Language**: follows the DSH interface language (Chinese/English); the header, the step lines and the action names are all localized.
 - **End of turn**: the panel closes with the turn; failures and "stopped by the user" are marked before it goes.
 - **Only one panel**: when several copies of this plugin run on the same machine (two connections in DSH, for instance), only the one that first claims `<data>/overlay.lock` draws the overlay; the rest stand by and take over next round if the holder dies or exits.
-- **Without a writer**: running this plugin alone (Claude Code, Codex, ...) means there is no `activity.json`, so the panel never shows and one idle PowerShell helper process is left over; pass `--no-overlay` to skip it.
+- **Without a writer**: started outside DSH, without the companion plugin, there is no `activity.json`, so the panel never shows and one idle PowerShell helper process is left over; pass `--no-overlay` to skip it.
 - **If you edit the renderer**: changing `scripts/windows-takeover.cs` breaks the hash check of the prebuilt DLL, so the loader falls back to compiling with `Add-Type` (2-5 s slower to start, same behaviour).
 
 Ported from [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) 0.6.3 (MIT); see [NOTICE](NOTICE.md).
@@ -448,7 +417,7 @@ Not yet verified:
 
 - the browser side on macOS and Linux;
 - machines with Chrome but no Edge;
-- real use inside Codex, Cursor and other clients.
+- any host other than DSH: this server is adapted for DSH only, as described in [Setup](#setup).
 
 ## Experiments
 

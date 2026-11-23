@@ -2,11 +2,11 @@
 
 [English](README.md) | 简体中文
 
-会自己进化的电脑操作插件，给任何 Agent 用。
+会自己进化的电脑操作插件，为 DeepSeek Harness 而写。
 
 > 从 **[dsh-world](https://github.com/chenkezhen480/dsh-world)** 0.8 的「她自己的浏览器与她学会的操作」独立出来，去掉了对 DSH 宿主的依赖。操作的存储、回放和修复方式由 dsh-world 开发期间的两轮对照实验选定，见 [实验](#实验)。
 
-**本仓库是两个项目的融合。**[evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use)——专用浏览器、操作目录、停下开关——与 [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win)——Windows 桌面模式与右上角的思考/步骤浮窗——现在合成一个 MCP 服务器，名字是 `evolution-computer-use-win`。两者都是 MIT，见 [NOTICE](NOTICE.md)。
+**本仓库是两个项目的融合。**[evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use)——专用浏览器、操作目录、停下开关——与 [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win)——Windows 桌面模式与右上角的思考/步骤浮窗——现在合成一个 MCP 服务器，名字是 `evolution-computer-use-win`。两者都是 MIT：合并后的许可见 [LICENSE](LICENSE)，移植自 dsh-world、dsh-inner-browser-use 的第三方代码见 [NOTICE](NOTICE.md)。
 
 - **专用浏览器**：系统自带的 Edge（或 Chrome），独立配置目录，通过 DevTools 协议（CDP）控制，不用你的鼠标键盘，也碰不到你日常的浏览器。
 - **用户的电脑**（Windows，要用户打开）：后台模式往某个窗口投递输入，不动鼠标、不抢焦点；前台模式用真的鼠标键盘操作整个屏幕。
@@ -18,61 +18,25 @@
 
 ## 接入
 
-需要 Node.js 22.16 或更高。不用手动下载或 build：下面的配置都通过 `npx` 运行 [npm 上的包](https://www.npmjs.com/package/evolution-computer-use-win)，第一次用时自动下载。
+需要 Node.js 22.16 或更高。不用手动下载或 build：下面的命令通过 `npx` 运行 [npm 上的包](https://www.npmjs.com/package/evolution-computer-use-win)，第一次用时自动下载。
 
 > npm 上的包名是新名字：如果 `evolution-computer-use-win` 还没发布，用[从源码运行](#从源码运行)（或在克隆目录里 `npm publish`）。旧的 `evolution-computer-use` 包是融合前的版本。
 
 `--desktop` 默认是 `off`（只有专用浏览器），要让 Agent 操作你的电脑就写 `background` 或 `foreground`，见「用户的电脑」。它只是启动时的初始状态：运行中 Agent 可以用 `desktop_mode` 工具在关闭、后台、前台之间切换，不用重启。
 
-Windows 上的 `npx` 是个批处理文件（`npx.cmd`），有的客户端不能直接启动它，所以下面的例子都用 `cmd /c` 包一层。macOS 和 Linux 上去掉 `cmd /c`，直接把 `npx` 当命令。
+Windows 上的 `npx` 是个批处理文件（`npx.cmd`），有的宿主不能直接启动它，所以 Windows 下的命令用 `cmd /c` 包一层。macOS 和 Linux 上去掉 `cmd /c`，直接把 `npx` 当命令。
 
-### Claude Code
+### DeepSeek Harness（DSH）
 
-```powershell
-claude mcp add --scope user evolution-computer-use-win -- cmd /c npx -y evolution-computer-use-win --desktop background
-```
+这个项目是为 DeepSeek Harness 写的，也只适配它。要在 DSH 里用，需要两半：本仓库这个 stdio MCP 服务器，以及配套的 DSH 插件 `dsh-evolution-desktop-mode`——桌面模式的设置项、思考浮窗的 `activity.json`（写侧）都由它提供。
 
-`--scope user` 让所有项目都能用；不写就只加到当前项目。
+在 DSH 里按 stdio 方式加这个 MCP 连接：
 
-也可以当插件装，Claude Code 会用 git 从 GitHub 拉下来，直接从源码跑：
-
-```text
-/plugin marketplace add thefreedoomdoor/evolution-computer-use-win
-/plugin install evolution-computer-use-win
-```
-
-插件启动时桌面控制是关的；要传 `--desktop`，就用上面的 `claude mcp add`。
-
-### Codex CLI
-
-`~/.codex/config.toml`：
-
-```toml
-[mcp_servers.evolution-computer-use-win]
-command = "cmd"
-args = ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
-# 录 2 分钟以内的视频、等浏览器排队都可能超过默认的 60 秒
-tool_timeout_sec = 180
-```
-
-### Cursor、Cline、Windsurf、Claude Desktop 等
-
-这些客户端都认 `mcpServers` 这种写法（Cursor 是 `.cursor/mcp.json`，Claude Desktop 是 `claude_desktop_config.json`）：
-
-```json
-{
-  "mcpServers": {
-    "evolution-computer-use-win": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
-    }
-  }
-}
-```
-
-### 其他支持 MCP 的 Agent
-
-任何 stdio 方式的 MCP 客户端都能用：命令是 `npx -y evolution-computer-use-win [选项]`。服务器支持协议版本 2025-06-18、2025-03-26、2024-11-05，初始化时会把用法说明放在 `instructions` 里。截图以 MCP 的 `image` 内容返回，客户端要能把图片交给模型，`page_shot` 和 `desktop` 才有用。
+- **命令（Windows）：** `cmd /c npx -y evolution-computer-use-win --desktop background`
+- **命令（macOS、Linux）：** `npx -y evolution-computer-use-win --desktop background`
+- **协议版本：** 2025-06-18、2025-03-26、2024-11-05。
+- **初始化说明：** 用法说明通过 `instructions` 下发。
+- **图片：** 截图以 MCP 的 `image` 内容返回；宿主能把图片交给模型，`page_shot` 和 `desktop` 才有用。
 
 ### 从源码运行
 
@@ -85,7 +49,17 @@ npm install
 npm run build        # 生成 lib/
 ```
 
-然后把上面配置里的 `cmd /c npx -y evolution-computer-use-win` 换成 `node D:/tools/evolution-computer-use-win/lib/cli.js`。本地 clone 也能当 Claude Code 插件装：`/plugin marketplace add` 后面写本地路径。
+然后把命令里的 `cmd /c npx -y evolution-computer-use-win` 换成 `node D:/tools/evolution-computer-use-win/lib/cli.js`。
+
+### 未适配其他 Agent 应用
+
+本项目只适配 DeepSeek Harness。Claude Code、Codex CLI、Cursor、Cline、Windsurf、Claude Desktop 以及其他 MCP 客户端都能启动同一条命令（服务器本身就是标准 stdio MCP），但既没有测过，也不提供支持：
+
+- 设置页里的桌面模式开关、思考浮窗的写侧，都在 DSH 插件里；
+- 浮窗的显示与样式设置页也是 DSH 的插件设置页；
+- 缺了它们浮窗不会出现，残留的空转助手进程要自己清理；传 `--no-overlay` 可以完全关掉浮窗那一半。
+
+下面的 `--desktop` 默认值、`desktop_mode` 工具等 MCP 约定照旧，但出了 DSH 不承诺可用。
 
 ### 在 JS/TS 里直接嵌入
 
@@ -136,7 +110,7 @@ evolution-computer-use-win status [选项]    列出学会的操作和有问题�
 | `--no-messages` | 操作读到的消息不记进 `messages.jsonl` |
 | `--no-overlay` | 不启动右上角的思考/步骤浮窗（默认开，显示与样式由 DSH 插件设置） |
 
-故障和恢复都写到 stderr（MCP 客户端一般会记进它自己的日志），Agent 调 `computer_use` 不带参数时也会看到。
+故障和恢复都写到 stderr（MCP 宿主一般会记进它自己的日志），Agent 调 `computer_use` 不带参数时也会看到。
 
 ## 工具
 
@@ -279,7 +253,7 @@ Agent 动手时，屏幕右上角浮出一块深色面板：这一回合的状�
 - **语言**：跟随 DSH 界面语言（中文/英文），面板上的标题、步骤行、动作名都是本地化的。
 - **回合结束**：面板随即收起；失败和「被用户停下」在结束前那一瞬照样标出来。
 - **只有一块**：同一台机器上同时跑几个本插件（比如 DSH 里挂了两条连接），也只有先认领 `<数据目录>/overlay.lock` 的那个画浮窗，其余待命；持有者崩了或退出，待命的下一轮接管。
-- **没有写侧时**：只跑本插件（Claude Code、Codex 等）就没有 `activity.json`，浮窗一直不显示，只多一个空转的 PowerShell 助手进程；不想启动它加 `--no-overlay`。
+- **没有写侧时**：在 DSH 之外单独启动（没有配套插件）就没有 `activity.json`，浮窗一直不显示，只多一个空转的 PowerShell 助手进程；不想启动它加 `--no-overlay`。
 - **改了渲染脚本**：`scripts/windows-takeover.cs` 一旦改动，DLL 快路径的哈希校验失败，会自动回落到 `Add-Type` 现编（启动慢 2–5 秒，功能一样）。
 
 移植自 [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) 0.6.3（MIT），见 [NOTICE](NOTICE.md)。
@@ -326,7 +300,7 @@ Agent 动手时，屏幕右上角浮出一块深色面板：这一回合的状�
 
 `npm test` 跑全部离线测试（154 个，其中 2 个真机测试默认跳过：`ECU_EDGE_TEST=1` 打开真的 Edge，`ECU_DESKTOP_TEST=1` 在开着微信的桌面上只读地截图）。`npm run typecheck` 做类型检查。
 
-已在 Windows 11 家庭中文版（10.0.26200）、Node 22.16 上用构建好的 `lib/cli.js` 走过一遍 MCP：初始化、列工具、后台模式列窗口（真的 PowerShell 助手）、`page_open` 和 `page_shot`（真的 Edge）、保存并回放操作、把操作改坏后自动退回旧版。dsh-world 里做过的桌面真机验证（微信的后台点击、输入、托盘唤起、前台模式）是同一份代码，这里没有重做。尚未验证：macOS 和 Linux 上的浏览器部分；只有 Chrome 没有 Edge 的机器；Codex、Cursor 等客户端里的实际接入。
+已在 Windows 11 家庭中文版（10.0.26200）、Node 22.16 上用构建好的 `lib/cli.js` 走过一遍 MCP：初始化、列工具、后台模式列窗口（真的 PowerShell 助手）、`page_open` 和 `page_shot`（真的 Edge）、保存并回放操作、把操作改坏后自动退回旧版。dsh-world 里做过的桌面真机验证（微信的后台点击、输入、托盘唤起、前台模式）是同一份代码，这里没有重做。尚未验证：macOS 和 Linux 上的浏览器部分；只有 Chrome 没有 Edge 的机器；DSH 以外的其他 Agent 应用（本项目只适配 DSH）。
 
 ## 实验
 
