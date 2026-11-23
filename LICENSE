@@ -3,11 +3,6 @@ MIT License
 Copyright (c) 2026 ckz (evolution-computer-use, https://github.com/chenkezhen480/evolution-computer-use)
 Copyright (c) 2026 Yu-tao-Li, cgissing (dsh-computer-use-win, https://github.com/Yu-tao-Li/dsh-computer-use-win)
 
-This project, evolution-computer-use-win, merges those two MIT-licensed projects
-into one MCP server. Both copyright notices and the permission notice below apply
-to the merged work. Third-party code ported from dsh-world and
-dsh-inner-browser-use is listed in NOTICE.md, together with its license.
-
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights

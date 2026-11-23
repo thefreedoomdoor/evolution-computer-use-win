@@ -1,5 +1,7 @@
 # Notice
 
+evolution-computer-use-win merges two MIT-licensed projects: [evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use) (Copyright (c) 2026 ckz) and [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) (Copyright (c) 2026 Yu-tao-Li, cgissing). Both notices are kept in [LICENSE](LICENSE). What follows is the code that came from outside those two.
+
 The core of this plugin is ported from [dsh-world](https://github.com/chenkezhen480/dsh-world) 0.8, `src/ecosystem/computer/` (MIT, Copyright (c) 2026 ckz).
 
 Within it, these files were ported and rewritten from `sidecar.js` and `read.js` of [dsh-inner-browser-use](https://www.npmjs.com/package/dsh-inner-browser-use) 0.47.28:
