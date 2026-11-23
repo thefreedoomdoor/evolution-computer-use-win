@@ -288,7 +288,7 @@ The agent sees one window's screenshots, and input is posted straight to that wi
 
 A program that is running with neither a window nor a tray icon is not launched again, since WeChat 4.x would open a second copy.
 
-Browser pages are the one thing posted input cannot reach: Chromium throws away `WM_CHAR`/`WM_KEYDOWN` sent to its window, so typing into the address bar or clicking inside a page does nothing. Use `open` with a `url` instead: the helper hands the address to Windows ShellExecute, the browser fetches the page itself, and the same window then shows it. Everything else in the page (scrolling, clicking a link) still needs foreground mode.
+Browser pages are the one thing posted input cannot reach: Chromium throws away `WM_CHAR`/`WM_KEYDOWN` sent to its window, so typing into the address bar or clicking inside a page does nothing. Use `open` with a `url` instead: the page is opened by the agent's own browser over CDP, behind every other window — your browser is not started and nothing is brought to the front — and the shot is a window capture of that background window. For what is inside the page, use `page_open`/`page_read`/`page_click`; foreground mode is only needed to drive your own browser by hand.
 
 Programs running as administrator (many games) are out of reach; the agent is told to ask you for foreground mode.
 

@@ -140,7 +140,15 @@ export function createComputerUse(options: ComputerUseOptions) {
     if (desktopUse) return undefined;
     if (!windows()) { faults.set('desktop', '桌面控制目前只支持 Windows'); return '桌面控制目前只支持 Windows'; }
     const driver = options.desktopDriver?.(events) ?? createDesktopDriver({ faults, events });
-    const desktop = createDesktop({ driver, companion, signFault });
+    // The agent's own browser (CDP) opens the page behind everything else, so opening a URL never takes the user's focus.
+    const desktop = createDesktop({
+      driver, companion, signFault,
+      browse: url => browser.run(async page => {
+        await page.open(url);
+        const title = await page.evaluate('document.title', {});
+        return typeof title === 'string' && title ? title : undefined;
+      }),
+    });
     desktopUse = { driver, desktop, ...(options.inbox === false ? {} : { inbox: startInbox(options.inbox ?? {}) }) };
     faults.clear('desktop');
     changed(before);

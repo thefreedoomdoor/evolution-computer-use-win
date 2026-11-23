@@ -237,3 +237,20 @@ test('actions run one at a time, in order', async () => {
   await Promise.all([first, second]);
   assert.ok(s.ops().indexOf('click') < s.ops().indexOf('key'));
 });
+
+test('open with a url goes to the agent browser behind everything and pictures that window', async () => {
+  const BROWSER = { hwnd: 900, pid: 77, exe: 'msedge', title: '哔哩哔哩 (゜-゜)つロ 干杯~-bilibili - 用户配置 1 - Microsoft Edge', minimized: false, width: 1265, height: 1372 };
+  let shown = [TERMINAL];
+  const f = fake(shown, { windows: () => ({ windows: shown, foreground: TERMINAL.hwnd }) });
+  const browsed: string[] = [];
+  const desktop = createDesktop({
+    driver: f.driver, settleMs: 0,
+    browse: async url => { browsed.push(url); shown = [TERMINAL, BROWSER]; return '哔哩哔哩 (゜-゜)つロ 干杯~-bilibili'; },
+  });
+  const result = await desktop.act({ action: 'open', app: 'Microsoft Edge', url: 'https://www.bilibili.com/' });
+  assert.deepEqual(browsed, ['https://www.bilibili.com/'], 'the page is opened by the agent browser over CDP');
+  assert.equal(f.ops().includes('url'), false, 'ShellExecute is not used, so nothing is brought to the front');
+  const shot = f.calls.find(([op]) => op === 'shot')!;
+  assert.equal(shot[1].hwnd, BROWSER.hwnd, 'the picture is the agent browser window');
+  assert.match(result.text, /已在后台浏览器打开 https:\/\/www\.bilibili\.com\/.*前台窗口没有变/);
+});

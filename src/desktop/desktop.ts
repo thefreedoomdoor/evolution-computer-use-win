@@ -82,9 +82,13 @@ export function createDesktop(deps: {
   /** A banner that could not be drawn: said in the host's health, never a failed action of the agent's. */
   signFault?(text: string | undefined): void;
   lingerMs?: number;
+  /** Opens the address in the agent's own browser (CDP, behind other windows) and returns the page title; nothing is typed into the user's windows. */
+  browse?(url: string): Promise<string | undefined>;
 }) {
   const running = deps.running ?? isRunning, settleMs = deps.settleMs ?? SETTLE_MS, appearMs = deps.appearMs ?? APPEAR_MS;
   let window: Window | undefined, view: View | undefined, shots = 0;
+  /** The agent browser's window, remembered so later pages keep being captured from the same background window. */
+  let browseWindow: number | undefined;
   /** The program's windows as last seen, and the agent's last input: what changed after it, and how soon, is told to the agent. */
   let known: Map<number, string> | undefined, acted: { what: string; at: number } | undefined;
 
@@ -210,10 +214,29 @@ export function createDesktop(deps: {
     return { windows, told: `${app.name} 没开，已经启动；${await giveBack(foreground)}\n` };
   }
   async function open(app?: string, url?: string): Promise<DesktopResult> {
-    // 网址走 ShellExecute 交给浏览器自己打开：后台投递的按键会被 Chromium 丢弃，只有这条不依赖合成输入。
+    // 用户自己的 Edge/Chrome 无法从后台窗口输入（Chromium 丢弃投递的按键），ShellExecute 又会把它带到前台。
+    // 所以网址交给 agent 自己的浏览器（CDP 驱动）：窗口留在后面，用户不动鼠标、不丢焦点，截图仍是该后台窗口的 PrintWindow。
     if (url?.trim()) {
       const target = url.trim();
       if (!/^https?:\/\//i.test(target)) throw new Error('url 要是 http:// 或 https:// 开头的网址');
+      if (deps.browse) {
+        const before = await list();
+        const started = new Set(before.windows.map(entry => entry.hwnd));
+        const title = await deps.browse(target);
+        await pause(1200);
+        const now = await list();
+        const fresh = now.windows.find(entry => !started.has(entry.hwnd) && (!title || entry.title.startsWith(title)));
+        const chosen = (browseWindow !== undefined ? now.windows.find(entry => entry.hwnd === browseWindow) : undefined)
+          ?? fresh ?? now.windows.find(entry => !!title && entry.title.startsWith(title));
+        if (chosen) {
+          browseWindow = chosen.hwnd;
+          window = { hwnd: chosen.hwnd, pid: chosen.pid, app: '后台浏览器' };
+          view = undefined;
+          const steady = now.foreground === before.foreground ? '，前台窗口没有变' : '';
+          return shot(`已在后台浏览器打开 ${target}（标题：${title ?? '未知'}）${steady}；看截图确认。`);
+        }
+        return { text: `已在后台浏览器打开 ${target}，但没找到它的窗口来截图。` };
+      }
       if (app?.trim()) await open(app.trim());
       await call('url', { url: target });
       await pause(1500);
