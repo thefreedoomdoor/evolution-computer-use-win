@@ -145,7 +145,7 @@ export function createComputerUse(options: ComputerUseOptions) {
       driver, companion, signFault,
       browse: url => browser.run(async page => {
         await page.open(url);
-        const title = await page.evaluate('document.title', {});
+        const title = await page.evaluate('return document.title', {});
         return typeof title === 'string' && title ? title : undefined;
       }),
     });

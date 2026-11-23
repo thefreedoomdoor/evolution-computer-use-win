@@ -223,11 +223,12 @@ export function createDesktop(deps: {
         const before = await list();
         const started = new Set(before.windows.map(entry => entry.hwnd));
         const title = await deps.browse(target);
-        await pause(1200);
-        const now = await list();
-        const fresh = now.windows.find(entry => !started.has(entry.hwnd) && (!title || entry.title.startsWith(title)));
-        const chosen = (browseWindow !== undefined ? now.windows.find(entry => entry.hwnd === browseWindow) : undefined)
-          ?? fresh ?? now.windows.find(entry => !!title && entry.title.startsWith(title));
+        let now = await list();
+        const pick = () => (browseWindow !== undefined ? now.windows.find(entry => entry.hwnd === browseWindow) : undefined)
+          ?? now.windows.find(entry => !started.has(entry.hwnd) && (!title || entry.title.startsWith(title)))
+          ?? now.windows.find(entry => !!title && entry.title.startsWith(title));
+        let chosen = pick();
+        for (let tries = 0; !chosen && tries < 12; tries++) { await pause(400); now = await list(); chosen = pick(); }
         if (chosen) {
           browseWindow = chosen.hwnd;
           window = { hwnd: chosen.hwnd, pid: chosen.pid, app: '后台浏览器' };
