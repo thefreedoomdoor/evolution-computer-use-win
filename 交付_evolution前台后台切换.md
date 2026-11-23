@@ -249,7 +249,7 @@ dsh-evolution-desktop-mode  ──activity.json──▶  src/desktop/overlay.ts
 
 验证：
 
-- `tests/desktopOverlay.test.ts` 新增 4 个用例（刷新不截断内容、刚创建的空锁不被抢/过期空锁可接管、他人刷新被拒、**并发读者一次都读不到空内容**），`desktopOverlay+desktopMode+desktop` 共 36 个用例全过。
+- `tests/desktopOverlay.test.ts` 新增 5 个用例（刷新不截断内容、刚创建的空锁不被抢/过期空锁可接管、他人刷新被拒、**并发读者一次都读不到空内容**），该文件共 9 个用例全过；`desktopOverlay+desktopMode+desktop` 共 36 个用例全过。
 - 用旧写法（`writeFileSync` 每秒重写）跑同样的并发读者实验：31946 次采样里读到空内容 473 次 → 证明新测试确实能抓住这个 bug，新写法为 0 次。
 - `npx tsc --noEmit` 通过，`npm run build` 重新生成 `lib/`。
 
