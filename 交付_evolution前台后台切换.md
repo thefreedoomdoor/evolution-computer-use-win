@@ -258,5 +258,6 @@ dsh-evolution-desktop-mode  ──activity.json──▶  src/desktop/overlay.ts
 
 - 两个 cli 进程（47728、50932）并存，助手只有 1 个（powershell 29996，父进程 47728），`overlay.lock` 内容 47728 且每秒刷新；全系统只有 1 个 `WindowsForms10.Window.8.*` 可见浮窗（360x240 @2180,70）——两块浮窗、锁来回倒手的问题已消失。
 - 读侧实时生效：`POST /api/dsh-evolution-desktop-mode/set` 把 overlay 宽改成 480 → 助手窗口立刻 480x240@2060,70，改回 360 → 360x240@2180,70；`overlayEnabled:false` → 窗口消失，改回 true 后随下一次 activity 变化重现。
-- 门控：纯对话回合 `activity.json` 的 `active/indicator` 为 false（不显示）；调用 desktop 后才变 true，并带上该回合操作前的思考（intent）。同一回合内后续普通工具调用会刷新 `lastActive`，浮窗在本回合余下时间继续显示；30 秒无动作或回合结束 +20 秒后收起。
+- 门控：纯对话回合 `activity.json` 的 `active/indicator` 为 false（不显示）；调用 desktop 后才变 true，并带上该回合操作前的思考（intent）。
+- 收起规则（用户 2026-11-23 22:45 确认）：只按「上一次真的操作电脑（桌面/网页工具）」计时，写代码、跑命令这类普通工具不续命；连续 30 秒没有电脑操作就收起，回合结束 +20 秒也收起。网页工具仍算操作电脑。
 
