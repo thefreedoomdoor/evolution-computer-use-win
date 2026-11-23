@@ -8,6 +8,7 @@ import type { DesktopMode } from './desktop/mode.ts';
 import { STOPPED } from './desktop/turns.ts';
 import { INSTRUCTIONS } from './instructions.ts';
 import { serveMcp } from './mcp/server.ts';
+import { startThoughtOverlay } from './desktop/overlay.ts';
 import { errorText, Faults } from './shared/faults.ts';
 
 const HELP = `evolution-computer-use：会自己进化的电脑操作插件（MCP 服务器）
@@ -27,17 +28,19 @@ const HELP = `evolution-computer-use：会自己进化的电脑操作插件（MC
   --inbox-ignore <名单> 信箱不报的程序，逗号分隔（比如已经有自己通道的微信）
   --no-inbox            桌面控制开着时也不看任务栏
   --no-messages         操作读到的消息不记进 <数据目录>/messages.jsonl
+  --no-overlay          不启动右上角的思考/步骤浮窗（默认开，随 DSH 插件设置）
   -h, --help            显示这段说明`;
 
 const STOP_FILE = 'desktop-stopped';
-type Options = { data: string; procedures?: string; profile?: string; desktop: string; name?: string; inbox: boolean; ignore: string[]; messages: boolean };
+type Options = { data: string; procedures?: string; profile?: string; desktop: string; name?: string; inbox: boolean; ignore: string[]; messages: boolean; overlay: boolean };
 
 function parse(argv: string[]): { command: string; options: Options } {
   const { values, positionals } = parseArgs({
     args: argv, allowPositionals: true, strict: true,
     options: {
       data: { type: 'string' }, procedures: { type: 'string' }, profile: { type: 'string' }, desktop: { type: 'string' }, name: { type: 'string' },
-      'inbox-ignore': { type: 'string' }, 'no-inbox': { type: 'boolean' }, 'no-messages': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      'inbox-ignore': { type: 'string' }, 'no-inbox': { type: 'boolean' }, 'no-messages': { type: 'boolean' },
+      'no-overlay': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
   });
   if (values.help) { process.stdout.write(`${HELP}\n`); process.exit(0); }
@@ -51,6 +54,7 @@ function parse(argv: string[]): { command: string; options: Options } {
       data: resolve(values.data ?? join(homedir(), '.evolution-computer-use')),
       ...(values.procedures ? { procedures: resolve(values.procedures) } : {}), ...(values.profile ? { profile: resolve(values.profile) } : {}),
       desktop, ...(values.name ? { name: values.name } : {}), inbox: !values['no-inbox'], messages: !values['no-messages'],
+      overlay: !values['no-overlay'],
       ignore: (values['inbox-ignore'] ?? '').split(/[,，]/).map(name => name.trim()).filter(Boolean),
     },
   };
@@ -112,7 +116,13 @@ async function serve(options: Options): Promise<void> {
   }, 800);
   modeTimer.unref();
 
-  const end = () => { clearInterval(modeTimer); computer.stop(); process.exit(0); };
+  // 右上角思考/步骤浮窗：DSH 插件把活动写进 activity.json，这里转发给 PowerShell 助手画出来。
+  // --no-overlay 是硬关（不启动助手进程）；软开关在 activity.json 的 overlayEnabled，由 overlay 自己判断。
+  const overlay = options.overlay
+    ? startThoughtOverlay({ activityFile: join(options.data, 'activity.json'), log })
+    : undefined;
+
+  const end = () => { clearInterval(modeTimer); overlay?.stop(); computer.stop(); process.exit(0); };
   process.once('SIGINT', end); process.once('SIGTERM', end);
   await server.closed;
   end();

@@ -130,6 +130,7 @@ evolution-computer-use status [选项]    列出学会的操作和有问题的�
 | `--inbox-ignore <名单>` | 信箱不报的程序，逗号分隔 |
 | `--no-inbox` | 桌面控制开着也不看任务栏 |
 | `--no-messages` | 操作读到的消息不记进 `messages.jsonl` |
+| `--no-overlay` | 不启动右上角的思考/步骤浮窗（默认开，显示与样式由 DSH 插件设置） |
 
 故障和恢复都写到 stderr（MCP 客户端一般会记进它自己的日志），Agent 调 `computer_use` 不带参数时也会看到。
 
@@ -256,6 +257,27 @@ Agent 动手时屏幕顶部正中浮出一个深色胶囊「<名字>正在操作
 - 按下时它没有正在做的一步，它的下一个工具结果后面会附上这句话。
 - 在你解除之前，所有动电脑的操作都会被拒绝（回看录好的还可以）。停下会记在 `<数据目录>/desktop-stopped`，Agent 重启也不会自动解除。确认没问题后在终端运行 `npx -y evolution-computer-use resume`（数据目录不是默认的就加 `--data`）。
 
+## 思考浮窗（右上角）
+
+Agent 动手时，屏幕右上角浮出一块深色面板：这一回合的状态（「第 2 步 · 执行中」）、每一步做过哪些动作（「打开页面、读取设置」「点击「设置」按钮」），以及下面的思考原文和回复原文。它是只读的，不接鼠标（默认「锁定」= 鼠标穿透），也不进截图和录屏。
+
+浮窗由两部分拼成，中间隔着 `activity.json`：
+
+| 半边 | 在哪 | 干什么 |
+| --- | --- | --- |
+| 写侧 | DSH 宿主插件 `dsh-evolution-desktop-mode` | 订阅 DSH 的 `agent/assistant-stream`、`session/event`、`tools/execute`，把思考、回复、步骤原子写进 `<数据目录>/activity.json` |
+| 读侧 | 本插件 `src/desktop/overlay.ts` | 每 1 秒读 `activity.json`，把内容用行 JSON 发给 `scripts/windows-takeover.ps1` 画出的 WinForms 浮窗 |
+
+这样拆是因为本插件是标准 stdio MCP，拿不到宿主的会话事件；换任何宿主都只要补写侧。
+
+- **显示与样式**：在 DSH 的插件设置页（插件列表里这一条下面）改——开关、位置（右上/左上/右下/左下）、宽度 240–1600、高度 160–1600、不透明度 20–100%、锁定（鼠标穿透）。改动立即生效，存进 `<数据目录>/activity-settings.json`，由写侧抄进 `activity.json`。
+- **语言**：跟随 DSH 界面语言（中文/英文），面板上的标题、步骤行、动作名都是本地化的。
+- **回合结束**：面板停留 20 秒再收起，好让你看到最后的结果；失败和「被用户停下」也照样标出来。
+- **没有写侧时**：只跑本插件（Claude Code、Codex 等）就没有 `activity.json`，浮窗一直不显示，只多一个空转的 PowerShell 助手进程；不想启动它加 `--no-overlay`。
+- **改了渲染脚本**：`scripts/windows-takeover.cs` 一旦改动，DLL 快路径的哈希校验失败，会自动回落到 `Add-Type` 现编（启动慢 2–5 秒，功能一样）。
+
+移植自 [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) 0.6.3（MIT），见 [NOTICE](NOTICE.md)。
+
 ## 信箱
 
 桌面控制开着时，插件替 Agent 看任务栏：按钮在闪，和系统通知（带一小段原话，最多 60 字）。动静一阵一阵来，最后一个动静之后 10 秒内没有新的，就合成一段放进信箱，Agent 的下一个工具结果后面附一句「信箱有新动静」，内容等它用 `inbox_read` 自己看，不在它做事做到一半时塞进来。程序名取它自己的说明，不读窗口标题（标题里可能有消息内容）。不落盘；启动时已经在通知列表里的算旧的。已经有自己通道的程序用 `--inbox-ignore` 排除。读不到通知时（没有权限）记为故障：在 Windows 设置 › 隐私和安全性 › 通知 里允许应用访问通知。
@@ -282,6 +304,8 @@ Agent 动手时屏幕顶部正中浮出一个深色胶囊「<名字>正在操作
 | `<数据目录>/procedures/` | 学会的操作、旧版本、每类的说明；插件只在保存时写 |
 | `<数据目录>/messages.jsonl` | 操作读到的消息 |
 | `<数据目录>/desktop-stopped` | 用户按了停下、还没解除时才有 |
+| `<数据目录>/activity.json` | 浮窗的活动数据，DSH 插件写、本插件读 |
+| `<数据目录>/activity-settings.json` | 浮窗的显示与样式设置，DSH 插件写 |
 
 截图和录制的帧只经过系统临时目录，用完就删。
 
@@ -311,3 +335,5 @@ Agent 动手时屏幕顶部正中浮出一个深色胶囊「<名字>正在操作
 ## 来源
 
 核心代码移植自 [dsh-world](https://github.com/chenkezhen480/dsh-world) 0.8 的 `src/ecosystem/computer/`（MIT）。浏览器的查找与启动、最小 CDP 会话、页面内元素登记表又移植并改写自 [dsh-inner-browser-use](https://www.npmjs.com/package/dsh-inner-browser-use) 0.47.28（MIT），保留署名与许可，见 [NOTICE](NOTICE.md)。
+
+右上角的思考/步骤浮窗（`scripts/` 与 `src/desktop/overlay.ts`、`src/desktop/overlay-strings.ts`）移植自 [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) 0.6.3（MIT），同样保留署名与许可。

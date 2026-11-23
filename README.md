@@ -152,6 +152,7 @@ Without a global install (`npm install -g evolution-computer-use`), put `npx -y`
 | `--inbox-ignore <list>` | Programs the inbox does not report, comma-separated |
 | `--no-inbox` | Do not watch the taskbar even with desktop control on |
 | `--no-messages` | Do not file what procedures read into `messages.jsonl` |
+| `--no-overlay` | Do not start the thought/step overlay at the top right (it starts by default; its look is set in the DSH plugin) |
 
 Faults and recoveries go to stderr (MCP clients usually keep it in their own logs). The agent also sees them when it calls `computer_use` without arguments.
 
@@ -338,6 +339,27 @@ To stop it, press Esc twice within half a second, or click the capsule's button:
   - The stop is kept in `<data>/desktop-stopped`, so restarting the agent does not lift it.
   - When you are satisfied, run `npx -y evolution-computer-use resume` in a terminal, adding `--data` if the data folder is not the default.
 
+## Thought overlay (top right)
+
+While the agent works, a dark panel floats at the top right of the screen: the state of this turn ("Step 2 · acting"), what each step did ("open the page, read the settings", "click the Settings button"), and below that the live reasoning and the reply. It is read-only, does not take the mouse ("locked" = click-through by default), and never appears in screenshots or recordings.
+
+The overlay is two halves joined by one file, `activity.json`:
+
+| Half | Where | What it does |
+| --- | --- | --- |
+| Writer | the DSH host plugin `dsh-evolution-desktop-mode` | subscribes to DSH's `agent/assistant-stream`, `session/event` and `tools/execute`, and atomically writes the reasoning, the reply and the steps into `<data>/activity.json` |
+| Reader | this plugin, `src/desktop/overlay.ts` | reads `activity.json` once a second and feeds it as line JSON to the WinForms overlay drawn by `scripts/windows-takeover.ps1` |
+
+The split exists because this plugin is a plain stdio MCP server and cannot see the host's session events. Any other host only has to supply the writer half.
+
+- **Show and style**: in the DSH plugin settings (under this plugin in the plugin list) — on/off, position (top-right, top-left, bottom-right, bottom-left), width 240-1600, height 160-1600, opacity 20-100%, locked (click-through). Changes apply at once and are stored in `<data>/activity-settings.json`, which the writer copies into `activity.json`.
+- **Language**: follows the DSH interface language (Chinese/English); the header, the step lines and the action names are all localized.
+- **End of turn**: the panel lingers for 20 s so you can read the last result; failures and "stopped by the user" are marked too.
+- **Without a writer**: running this plugin alone (Claude Code, Codex, ...) means there is no `activity.json`, so the panel never shows and one idle PowerShell helper process is left over; pass `--no-overlay` to skip it.
+- **If you edit the renderer**: changing `scripts/windows-takeover.cs` breaks the hash check of the prebuilt DLL, so the loader falls back to compiling with `Add-Type` (2-5 s slower to start, same behaviour).
+
+Ported from [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) 0.6.3 (MIT); see [NOTICE](NOTICE.md).
+
 ## Inbox
 
 While desktop control is on, the plugin watches the taskbar for the agent: flashing buttons, and system notifications with a short excerpt (at most 60 characters).
@@ -387,6 +409,8 @@ Embedding hosts can plug in their own `MessageSink`.
 | `<data>/procedures/` | Learned procedures, kept versions and category notes; the plugin writes here only on save |
 | `<data>/messages.jsonl` | Messages that procedures read |
 | `<data>/desktop-stopped` | Present only while a stop is in force |
+| `<data>/activity.json` | Overlay activity: written by the DSH plugin, read by this plugin |
+| `<data>/activity-settings.json` | Overlay show and style settings, written by the DSH plugin |
 
 Screenshots and recording frames pass through the system temp folder and are deleted after use.
 
@@ -435,3 +459,5 @@ The full write-ups and the mapping to this code are in [docs/experiments/](docs/
 ## Credits
 
 The core is ported from [dsh-world](https://github.com/chenkezhen480/dsh-world) 0.8, `src/ecosystem/computer/` (MIT). The browser discovery and launch, the minimal CDP session and the in-page element registry were ported from [dsh-inner-browser-use](https://www.npmjs.com/package/dsh-inner-browser-use) 0.47.28 (MIT) by way of dsh-world, with attribution and license kept; see [NOTICE](NOTICE.md).
+
+The thought/step overlay (`scripts/`, `src/desktop/overlay.ts`, `src/desktop/overlay-strings.ts`) was ported from [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) 0.6.3 (MIT), likewise with attribution and license kept.
