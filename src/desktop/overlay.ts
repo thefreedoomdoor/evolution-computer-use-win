@@ -3,15 +3,19 @@
  *
  * evolution-computer-use 是标准 MCP stdio 服务器，拿不到 DSH 的
  * `agent/assistant-stream` 事件，所以采用共享文件方案：
- *   - DSH 插件（dsh-evolution-thought-overlay）订阅 assistant-stream 与工具执行，
+ *   - DSH 插件（dsh-evolution-desktop-mode）订阅 assistant-stream 与工具执行，
  *     把「正在思考 / 正在执行 / 步骤 / 回复」写进 ~/.evolution-computer-use/activity.json
  *   - 本模块每 1 秒把该文件转发给 windows-takeover.ps1 的 progress 命令，
  *     PowerShell 助手用 WinForms 在右上角画出浮窗。
  *
+ * 同一台机器上常常同时跑好几个 MCP 服务器（同一个 DSH 里挂两个连接就是如此），
+ * 而 activity.json 是共享的，所以浮窗只能有一块：谁先认领 `<数据目录>/overlay.lock`
+ * 谁画，其余进程待命，每轮再看一次——持有者崩了或退出了，待命的那个接管。
+ *
  * 环境变量：EVOCU_ACTIVITY_FILE（默认 ~/.evolution-computer-use/activity.json）
  */
-import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { helperStrings } from './overlay-strings.ts';
@@ -21,6 +25,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = join(HERE, '..', '..', 'scripts', 'windows-takeover.ps1');
 const DEFAULT_ACTIVITY = join(homedir(), '.evolution-computer-use', 'activity.json');
 const POLL_MS = 1000;
+/** 锁文件超过这么久没被持有者刷新，就算它已经不在了。 */
+const LOCK_STALE_MS = 5000;
+/** 助手反复起不来时最多重试几次，免得无限刷进程。 */
+const MAX_SPAWNS = 3;
 
 /** activity.json 的读取视图：写侧是 DSH 插件，字段都可能缺失。 */
 type Activity = {
@@ -56,9 +64,63 @@ const readJson = (file: string): Activity | undefined => {
   }
 };
 
+/** 进程还在不在。signal 0 只用来探测存在，Windows 上 EPERM 也算在。 */
+const pidAlive = (pid: number): boolean => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+};
+
+export type OverlayClaim = 'claimed' | 'held';
+
+/**
+ * 认领浮窗锁：拿到返回 'claimed'，别人正拿着返回 'held'。
+ * 只信「刷新得勤 + 进程还在」的持有者；过期的先原子改名抢下来，改名输了就是别人先动了。
+ */
+export function tryClaimOverlayLock(lockFile: string, pid = process.pid, now = Date.now()): OverlayClaim {
+  const create = (): OverlayClaim => {
+    try { mkdirSync(dirname(lockFile), { recursive: true }); } catch { /* 已存在 */ }
+    try {
+      const fd = openSync(lockFile, 'wx');
+      writeSync(fd, String(pid));
+      closeSync(fd);
+      return 'claimed';
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return 'held';
+    }
+    let holder = NaN;
+    try { holder = parseInt(readFileSync(lockFile, 'utf8').trim(), 10); } catch { /* 读不到就按过期处理 */ }
+    let fresh = false;
+    try { fresh = now - statSync(lockFile).mtimeMs < LOCK_STALE_MS; } catch { fresh = false; }
+    if (fresh && holder === pid) return 'claimed';   // 已经是自己的，重复认领算成功
+    if (fresh && pidAlive(holder)) return 'held';
+    try { renameSync(lockFile, lockFile + '.' + Math.random().toString(16).slice(2) + '.stale'); } catch { return 'held'; }
+    return create();
+  };
+  return create();
+}
+
+/** 持有者刷新锁；锁已经不属于自己（被别人抢走）时不动它。 */
+export function refreshOverlayLock(lockFile: string, pid = process.pid): boolean {
+  try {
+    if (parseInt(readFileSync(lockFile, 'utf8').trim(), 10) !== pid) return false;
+    writeFileSync(lockFile, String(pid));
+    return true;
+  } catch { return false; }
+}
+
+/** 退出时放锁，只放自己那份。 */
+export function releaseOverlayLock(lockFile: string, pid = process.pid): void {
+  try {
+    if (parseInt(readFileSync(lockFile, 'utf8').trim(), 10) !== pid) return;
+    unlinkSync(lockFile);
+  } catch { /* 没了就算放了 */ }
+}
+
 export type ThoughtOverlayOptions = {
   activityFile?: string;
-  /** 浮窗界面语言（BCP 47）；默认读系统语言。 */
+  /** 单实例锁文件，默认 `<activity.json 同目录>/overlay.lock`。 */
+  lockFile?: string;
+  /** 浮窗界面语言（BCP 47）；默认跟随 activity.json 里的 locale，再默认系统语言。 */
   locale?: string;
   log?(text: string): void;
   /** 硬开关：返回 false 时隐藏浮窗（activity.json 里的软开关另行判断）。 */
@@ -67,50 +129,102 @@ export type ThoughtOverlayOptions = {
 
 /**
  * 启动浮窗助手并把 activity.json 的内容持续转发。
+ * 没认领到锁时不启动助手，只待命（`child` 为 undefined）；持有者退出后自动接管。
  */
 export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
   const activityFile = options.activityFile ?? process.env.EVOCU_ACTIVITY_FILE ?? DEFAULT_ACTIVITY;
-  const log = options.log ?? (() => {});
+  const lockFile = options.lockFile ?? join(dirname(activityFile), 'overlay.lock');
+  const log = options.log ?? (() => { });
   const enabled = options.enabled ?? (() => true);
-  const eventName = 'Local\\EVO-CU-OVERLAY-' + Math.random().toString(16).slice(2);
-  const child = spawn('powershell.exe', [
-    '-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass',
-    '-File', HELPER, '-CancelEvent', eventName,
-  ], { cwd: dirname(HELPER), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+
+  let child: ChildProcess | undefined;
   let stderr = '';
-  child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-  child.on('error', (error) => log(`[thought-overlay] 助手启动失败：${error.message}`));
+  let spawns = 0;
+  let owner = false;
+  let saidWaiting = false;
+  let givingUp = false;
+  let stopping = false;
 
-  let nextId = 0;
-  const pending = new Map();
-  child.stdout.on('data', (chunk) => {
-    for (const line of chunk.toString().split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      let reply;
-      try { reply = JSON.parse(line); } catch { continue; }
-      if (reply.id !== undefined && pending.has(reply.id)) {
-        pending.get(reply.id)();
-        pending.delete(reply.id);
+  const spawnHelper = () => {
+    spawns++;
+    const eventName = 'Local\\EVO-CU-OVERLAY-' + Math.random().toString(16).slice(2);
+    const proc = spawn('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass',
+      '-File', HELPER, '-CancelEvent', eventName,
+    ], { cwd: dirname(HELPER), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    stderr = '';
+    proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    proc.on('error', (error) => log('[thought-overlay] 助手启动失败：' + error.message));
+    proc.on('exit', () => {
+      if (stopping) return;
+      child = undefined;
+      helper = undefined;
+      last = '';
+      if (spawns >= MAX_SPAWNS) {
+        givingUp = true;
+        owner = false;
+        releaseOverlayLock(lockFile);
+        log('[thought-overlay] 助手起不来，浮窗这次不显示了（重启服务器会再试）');
+        return;
       }
-    }
-  });
-  const command = (name: string, params: Record<string, unknown> = {}) => new Promise<void>((resolve) => {
-    if (!child.stdin.writable) { resolve(); return; }
-    const id = ++nextId;
-    const timer = setTimeout(() => { pending.delete(id); resolve(); }, 4000);
-    pending.set(id, () => { clearTimeout(timer); resolve(); });
-    child.stdin.write(`${JSON.stringify({ ...params, id, command: name })}\n`);
-  });
+      log('[thought-overlay] 助手退出了，下一轮重开');
+    });
 
+    let nextId = 0;
+    const pending = new Map<number, () => void>();
+    proc.stdout.on('data', (chunk) => {
+      for (const line of chunk.toString().split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        let reply: { id?: number };
+        try { reply = JSON.parse(line); } catch { continue; }
+        if (reply.id !== undefined && pending.has(reply.id)) {
+          pending.get(reply.id)!();
+          pending.delete(reply.id);
+        }
+      }
+    });
+    const command = (name: string, params: Record<string, unknown> = {}) => new Promise<void>((resolve) => {
+      const stdin = proc.stdin;
+      if (!stdin || !stdin.writable) { resolve(); return; }
+      const id = ++nextId;
+      const timer = setTimeout(() => { pending.delete(id); resolve(); }, 4000);
+      pending.set(id, () => { clearTimeout(timer); resolve(); });
+      stdin.write(JSON.stringify({ ...params, id, command: name }) + '\n');
+    });
+    return { proc, command };
+  };
+
+  let helper: ReturnType<typeof spawnHelper> | undefined;
   let last = '';
+
   const tick = () => {
-    if (!enabled()) { void command('progress', { enabled: false, progress: {} }); return; }
+    if (givingUp) return;
+    if (!owner) {
+      if (tryClaimOverlayLock(lockFile) !== 'claimed') {
+        if (!saidWaiting) { saidWaiting = true; log('[thought-overlay] 浮窗已由另一个 evolution-computer-use 进程显示，本进程待命'); }
+        return;
+      }
+      owner = true;
+      saidWaiting = false;
+      helper = spawnHelper();
+      child = helper.proc;
+      last = '';
+    } else if (!refreshOverlayLock(lockFile)) {
+      // 锁被别人判过期抢走了，跟着让位，免得同时两块浮窗。
+      owner = false;
+      helper = undefined;
+      child = undefined;
+      last = '';
+      return;
+    }
+
+    if (!enabled()) { void helper?.command('progress', { enabled: false, progress: {} }); return; }
     const activity = readJson(activityFile);
-    // DSH 插件设置里的总开关：overlayEnabled 为 false 时浮窗隐藏（助手进程留着，随时可再开）。
-    if (!activity || activity.overlayEnabled === false) { void command('progress', { enabled: false, progress: {} }); return; }
+    // DSH 插件设置里的总开关：overlayEnabled 为 false 时浮窗隐藏（助手留着，随时可再开）。
+    if (!activity || activity.overlayEnabled === false) { void helper?.command('progress', { enabled: false, progress: {} }); return; }
     const payload = {
       enabled: activity.active !== false,
-      turnKey: `${activity.sessionId ?? ''}:${activity.turn ?? ''}`,
+      turnKey: (activity.sessionId ?? '') + ':' + (activity.turn ?? ''),
       settings: {
         progressOverlayEnabled: true,
         progressOverlayPosition: activity.position ?? 'top-right',
@@ -130,22 +244,38 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
         steps: activity.progress?.steps ?? [],
       },
     };
-    // 界面语言跟随写侧（activity.json 的 locale），语言变化时因 key 变化而重发。
-    const sent = { ...payload, strings: helperStrings(activity.locale) };
+    // 界面语言跟随写侧（activity.json 的 locale）；语言变化时因 key 变化而重发。
+    const sent = { ...payload, strings: helperStrings(activity.locale ?? options.locale) };
     const key = JSON.stringify(sent);
     if (key !== last) {
       last = key;
-      void command('configure', { remoteIndicatorVisible: false, cursorIndicatorEnabled: false });
-      void command('progress', sent);
+      void helper?.command('configure', { remoteIndicatorVisible: false, cursorIndicatorEnabled: false });
+      void helper?.command('progress', sent);
     }
   };
 
   const timer = setInterval(tick, POLL_MS);
   timer.unref();
   setTimeout(tick, 500).unref();
+
   const stop = () => {
+    stopping = true;
     clearInterval(timer);
-    void command('close').then(() => { try { child.kill(); } catch {} });
+    const running = helper;
+    helper = undefined;
+    child = undefined;
+    owner = false;
+    releaseOverlayLock(lockFile);
+    if (!running) return;
+    void running.command('close').then(() => { try { running.proc.kill(); } catch { /* 已经没了 */ } });
   };
-  return { stop, child, activityFile, getStderr: () => stderr };
+
+  return {
+    get child() { return child; },
+    get owning() { return owner; },
+    activityFile,
+    lockFile,
+    stop,
+    getStderr: () => stderr,
+  };
 }

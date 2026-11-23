@@ -355,6 +355,7 @@ The split exists because this plugin is a plain stdio MCP server and cannot see 
 - **Show and style**: in the DSH plugin settings (under this plugin in the plugin list) — on/off, position (top-right, top-left, bottom-right, bottom-left), width 240-1600, height 160-1600, opacity 20-100%, locked (click-through). Changes apply at once and are stored in `<data>/activity-settings.json`, which the writer copies into `activity.json`.
 - **Language**: follows the DSH interface language (Chinese/English); the header, the step lines and the action names are all localized.
 - **End of turn**: the panel lingers for 20 s so you can read the last result; failures and "stopped by the user" are marked too.
+- **Only one panel**: when several copies of this plugin run on the same machine (two connections in DSH, for instance), only the one that first claims `<data>/overlay.lock` draws the overlay; the rest stand by and take over next round if the holder dies or exits.
 - **Without a writer**: running this plugin alone (Claude Code, Codex, ...) means there is no `activity.json`, so the panel never shows and one idle PowerShell helper process is left over; pass `--no-overlay` to skip it.
 - **If you edit the renderer**: changing `scripts/windows-takeover.cs` breaks the hash check of the prebuilt DLL, so the loader falls back to compiling with `Add-Type` (2-5 s slower to start, same behaviour).
 
@@ -411,6 +412,7 @@ Embedding hosts can plug in their own `MessageSink`.
 | `<data>/desktop-stopped` | Present only while a stop is in force |
 | `<data>/activity.json` | Overlay activity: written by the DSH plugin, read by this plugin |
 | `<data>/activity-settings.json` | Overlay show and style settings, written by the DSH plugin |
+| `<data>/overlay.lock` | Single-instance lock for the overlay; it holds the PID of the process drawing it |
 
 Screenshots and recording frames pass through the system temp folder and are deleted after use.
 
