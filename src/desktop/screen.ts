@@ -64,7 +64,15 @@ export function createScreen(deps: {
   }
 
   /** A program's window in front: an open one, then its tray icon, then the Start menu. */
-  async function open(app?: string): Promise<DesktopResult> {
+  async function open(app?: string, url?: string): Promise<DesktopResult> {
+    if (url?.trim()) {
+      const target = url.trim();
+      if (!/^https?:\/\//i.test(target)) throw new Error('url 要是 http:// 或 https:// 开头的网址');
+      if (app?.trim()) await open(app.trim());
+      await hands('url', { url: target });
+      await pause(1500);
+      return after(`已让浏览器打开 ${target}，等页面加载；看截图确认。\n`);
+    }
     const listed = await windows();
     if (!app?.trim()) {
       const titles = [...new Set(listed.map(entry => entry.title))].slice(0, WINDOWS_SHOWN);
@@ -120,7 +128,7 @@ export function createScreen(deps: {
     record: input => watch.record(input),
     stop: () => watch.stop(),
     review: input => watch.review(input),
-    open: input => open(input.app),
+    open: input => open(input.app, input.url),
     shot: () => shot(),
     click: async input => {
       const at = onScreen(input.x, input.y);

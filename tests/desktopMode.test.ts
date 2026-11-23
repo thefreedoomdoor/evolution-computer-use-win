@@ -57,6 +57,8 @@ test('background creates the window helper alone, and saying it twice creates no
   assert.deepEqual(counters.created, { background: 1, foreground: 0 });
   assert.equal(counters.started, 0);
   assert.match(tool(computer, 'desktop')!.description, /后台模式/);
+  const desktopParams = tool(computer, 'desktop')!.inputSchema.properties;
+  assert.ok('url' in desktopParams, 'open 可以带 url 打开网页');
   assert.equal(computer.status().desktop?.mode, 'background');
   assert.equal(changes(), 1);
   assert.equal(await computer.setDesktopMode('background'), undefined);

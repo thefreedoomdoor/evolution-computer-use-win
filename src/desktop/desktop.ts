@@ -209,7 +209,17 @@ export function createDesktop(deps: {
     if (!windows.length) throw new Error(`${app.name} 启动了，但 ${appearMs / 1000} 秒内没有出现窗口`);
     return { windows, told: `${app.name} 没开，已经启动；${await giveBack(foreground)}\n` };
   }
-  async function open(app?: string): Promise<DesktopResult> {
+  async function open(app?: string, url?: string): Promise<DesktopResult> {
+    // 网址走 ShellExecute 交给浏览器自己打开：后台投递的按键会被 Chromium 丢弃，只有这条不依赖合成输入。
+    if (url?.trim()) {
+      const target = url.trim();
+      if (!/^https?:\/\//i.test(target)) throw new Error('url 要是 http:// 或 https:// 开头的网址');
+      if (app?.trim()) await open(app.trim());
+      await call('url', { url: target });
+      await pause(1500);
+      if (window) return shot(`已让浏览器打开 ${target}，等页面加载；看截图确认。`);
+      return { text: `已让默认浏览器打开 ${target}。` };
+    }
     const { windows, foreground } = await list();
     if (!app?.trim()) {
       const titles = [...new Set(windows.map(entry => entry.title))].slice(0, WINDOWS_SHOWN);
@@ -259,7 +269,7 @@ export function createDesktop(deps: {
     record: input => watch.record(input),
     stop: () => watch.stop(),
     review: input => watch.review(input),
-    open: input => open(input.app),
+    open: input => open(input.app, input.url),
     shot: () => shot(),
     click: async input => {
       const at = onWindow(input.x, input.y);
@@ -311,6 +321,8 @@ export function createDesktop(deps: {
 }
 export interface DesktopInput {
   action: string; app?: string; x?: number; y?: number; x2?: number; y2?: number; text?: string; submit?: boolean; key?: string; direction?: string; double?: boolean; right?: boolean;
+  /** For `open`: a web address to hand to the browser (ShellExecute), for pages a background window cannot type into. */
+  url?: string;
   /** For `click`, `drag` and `press`: seconds to keep the button or the key down (a long press, or walking in a game). */
   hold?: number;
   /** For `record`: how long, and how far apart the frames are. For `review`: a stretch of the recording, or one moment of it. */
