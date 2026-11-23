@@ -1,7 +1,7 @@
 {
   "name": "evolution-computer-use-win",
   "version": "0.4.0",
-  "description": "Self-evolving computer use for any agent: its own browser, the user's Windows desktop with a thought/step overlay, and a library of learned procedures it replays and repairs. Merges evolution-computer-use with dsh-computer-use-win. MCP server and JS library.",
+  "description": "Self-evolving computer use for DeepSeek Harness: its own browser, the user's Windows desktop with a thought/step overlay, and a library of learned procedures it replays and repairs. Merges evolution-computer-use with dsh-computer-use-win. MCP server and JS library.",
   "license": "MIT",
   "mcpName": "io.github.thefreedoomdoor/evolution-computer-use-win",
   "repository": {
