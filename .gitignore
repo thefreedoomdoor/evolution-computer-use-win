@@ -1,3 +1,9 @@
 node_modules/
 lib/
 *.tgz
+
+# local-only: upstream reference clone, recorded demos, scratch scripts
+repos/
+demo/
+tools/
+.tmp-*

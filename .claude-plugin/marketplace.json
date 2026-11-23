@@ -1,10 +1,10 @@
 {
-  "name": "evolution-computer-use",
+  "name": "evolution-computer-use-win",
   "owner": { "name": "ckz" },
-  "description": "evolution-computer-use: self-evolving computer use for any agent",
+  "description": "evolution-computer-use-win: self-evolving computer use for any agent",
   "plugins": [
     {
-      "name": "evolution-computer-use",
+      "name": "evolution-computer-use-win",
       "source": "./",
       "description": "Self-evolving computer use: the agent's own browser, the user's Windows desktop, and a library of learned procedures it replays and repairs"
     }

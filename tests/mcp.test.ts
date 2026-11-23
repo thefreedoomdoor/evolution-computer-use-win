@@ -108,7 +108,7 @@ test('the CLI serves MCP over stdio: an agent learns a procedure, finds it again
   assert.match((init.result as { instructions: string }).instructions, /computer_use/);
   one.c.notify('notifications/initialized');
   const names = ((await one.c.request('tools/list')).result as { tools: { name: string }[] }).tools.map(tool => tool.name);
-  assert.deepEqual(names, ['page_open', 'page_read', 'page_click', 'page_type', 'page_press', 'page_scroll', 'page_wait', 'page_shot', 'page_eval', 'computer_use', 'procedure_run', 'procedure_save', 'procedure_note', 'procedure_routines'], 'no desktop tool unless the user turns it on');
+  assert.deepEqual(names, ['page_open', 'page_read', 'page_click', 'page_type', 'page_press', 'page_scroll', 'page_wait', 'page_shot', 'page_eval', 'computer_use', 'procedure_run', 'procedure_save', 'procedure_note', 'procedure_routines', 'desktop_mode'], 'no desktop action unless the user turns it on; desktop_mode is listed so the agent can turn it on');
   const text = async (c: ReturnType<typeof client>, name: string, args: object) => ((await c.request('tools/call', { name, arguments: args })).result as { content: { text: string }[] }).content[0]!.text;
   assert.match(await text(one.c, 'procedure_save', { json: JSON.stringify({ name: '看首页', category: 'example', description: '打开首页', params: {}, steps: [{ open: 'https://example.com/' }, { check: { text: 'Example' } }] }) }), /^已保存 example\/看首页（第 1 版）/);
   assert.match(await text(one.c, 'procedure_note', { category: 'example', text: '网站：example.com（示例站）' }), /已写好 example 的说明/);

@@ -27,6 +27,8 @@ No runtime dependencies: the browser side uses only Node's built-in `WebSocket` 
 
 Requires Node.js 22.16 or later. There is nothing to download or build by hand: the configurations below run the [npm package](https://www.npmjs.com/package/evolution-computer-use-win) through `npx`, which fetches it on first use.
 
+> The npm name is new: if `evolution-computer-use-win` is not on npm yet, use [From source](#from-source) (or run `npm publish` from a clone). The old `evolution-computer-use` package is the pre-merger release.
+
 `--desktop` defaults to `off` (the agent's own browser only); to let the agent use your computer, pass `background` or `foreground`, as described in [The user's computer](#the-users-computer). It is only the initial state: while running, the agent can switch between off, background and foreground with the `desktop_mode` tool, no restart needed.
 
 On Windows, `npx` is a batch file (`npx.cmd`) that some clients cannot start directly, so the examples start it through `cmd /c`. On macOS and Linux, drop `cmd /c` and make `npx` the command.
@@ -53,7 +55,7 @@ The plugin starts with desktop control off. To pass `--desktop`, use `claude mcp
 `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.evolution-computer-use]
+[mcp_servers.evolution-computer-use-win]
 command = "cmd"
 args = ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
 # Recording up to two minutes of video, or waiting in the browser queue, can exceed the default 60 s

@@ -20,6 +20,8 @@
 
 需要 Node.js 22.16 或更高。不用手动下载或 build：下面的配置都通过 `npx` 运行 [npm 上的包](https://www.npmjs.com/package/evolution-computer-use-win)，第一次用时自动下载。
 
+> npm 上的包名是新名字：如果 `evolution-computer-use-win` 还没发布，用[从源码运行](#从源码运行)（或在克隆目录里 `npm publish`）。旧的 `evolution-computer-use` 包是融合前的版本。
+
 `--desktop` 默认是 `off`（只有专用浏览器），要让 Agent 操作你的电脑就写 `background` 或 `foreground`，见「用户的电脑」。它只是启动时的初始状态：运行中 Agent 可以用 `desktop_mode` 工具在关闭、后台、前台之间切换，不用重启。
 
 Windows 上的 `npx` 是个批处理文件（`npx.cmd`），有的客户端不能直接启动它，所以下面的例子都用 `cmd /c` 包一层。macOS 和 Linux 上去掉 `cmd /c`，直接把 `npx` 当命令。
@@ -46,7 +48,7 @@ claude mcp add --scope user evolution-computer-use-win -- cmd /c npx -y evolutio
 `~/.codex/config.toml`：
 
 ```toml
-[mcp_servers.evolution-computer-use]
+[mcp_servers.evolution-computer-use-win]
 command = "cmd"
 args = ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
 # 录 2 分钟以内的视频、等浏览器排队都可能超过默认的 60 秒

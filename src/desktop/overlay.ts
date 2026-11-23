@@ -1,7 +1,7 @@
 /**
  * 思考浮窗的辅助脚本（从 dsh-computer-use-win 移植，MIT）。
  *
- * evolution-computer-use 是标准 MCP stdio 服务器，拿不到 DSH 的
+ * evolution-computer-use-win 是标准 MCP stdio 服务器，拿不到 DSH 的
  * `agent/assistant-stream` 事件，所以采用共享文件方案：
  *   - DSH 插件（dsh-evolution-desktop-mode）订阅 assistant-stream 与工具执行，
  *     把「正在思考 / 正在执行 / 步骤 / 回复」写进 ~/.evolution-computer-use/activity.json
@@ -244,7 +244,7 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
     if (givingUp) return;
     if (!owner) {
       if (tryClaimOverlayLock(lockFile) !== 'claimed') {
-        if (!saidWaiting) { saidWaiting = true; log('[thought-overlay] 浮窗已由另一个 evolution-computer-use 进程显示，本进程待命'); }
+        if (!saidWaiting) { saidWaiting = true; log('[thought-overlay] 浮窗已由另一个 evolution-computer-use-win 进程显示，本进程待命'); }
         return;
       }
       owner = true;
