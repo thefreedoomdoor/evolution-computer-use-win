@@ -1,10 +1,12 @@
-# evolution-computer-use
+# evolution-computer-use-win
 
 [English](README.md) | 简体中文
 
 会自己进化的电脑操作插件，给任何 Agent 用。
 
 > 从 **[dsh-world](https://github.com/chenkezhen480/dsh-world)** 0.8 的「她自己的浏览器与她学会的操作」独立出来，去掉了对 DSH 宿主的依赖。操作的存储、回放和修复方式由 dsh-world 开发期间的两轮对照实验选定，见 [实验](#实验)。
+
+**本仓库是两个项目的融合。**[evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use)——专用浏览器、操作目录、停下开关——与 [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win)——Windows 桌面模式与右上角的思考/步骤浮窗——现在合成一个 MCP 服务器，名字是 `evolution-computer-use-win`。两者都是 MIT，见 [NOTICE](NOTICE.md)。
 
 - **专用浏览器**：系统自带的 Edge（或 Chrome），独立配置目录，通过 DevTools 协议（CDP）控制，不用你的鼠标键盘，也碰不到你日常的浏览器。
 - **用户的电脑**（Windows，要用户打开）：后台模式往某个窗口投递输入，不动鼠标、不抢焦点；前台模式用真的鼠标键盘操作整个屏幕。
@@ -16,7 +18,7 @@
 
 ## 接入
 
-需要 Node.js 22.16 或更高。不用手动下载或 build：下面的配置都通过 `npx` 运行 [npm 上的包](https://www.npmjs.com/package/evolution-computer-use)，第一次用时自动下载。
+需要 Node.js 22.16 或更高。不用手动下载或 build：下面的配置都通过 `npx` 运行 [npm 上的包](https://www.npmjs.com/package/evolution-computer-use-win)，第一次用时自动下载。
 
 `--desktop` 默认是 `off`（只有专用浏览器），要让 Agent 操作你的电脑就写 `background` 或 `foreground`，见「用户的电脑」。它只是启动时的初始状态：运行中 Agent 可以用 `desktop_mode` 工具在关闭、后台、前台之间切换，不用重启。
 
@@ -25,7 +27,7 @@ Windows 上的 `npx` 是个批处理文件（`npx.cmd`），有的客户端不�
 ### Claude Code
 
 ```powershell
-claude mcp add --scope user evolution-computer-use -- cmd /c npx -y evolution-computer-use --desktop background
+claude mcp add --scope user evolution-computer-use-win -- cmd /c npx -y evolution-computer-use-win --desktop background
 ```
 
 `--scope user` 让所有项目都能用；不写就只加到当前项目。
@@ -33,8 +35,8 @@ claude mcp add --scope user evolution-computer-use -- cmd /c npx -y evolution-co
 也可以当插件装，Claude Code 会用 git 从 GitHub 拉下来，直接从源码跑：
 
 ```text
-/plugin marketplace add chenkezhen480/evolution-computer-use
-/plugin install evolution-computer-use
+/plugin marketplace add thefreedoomdoor/evolution-computer-use-win
+/plugin install evolution-computer-use-win
 ```
 
 插件启动时桌面控制是关的；要传 `--desktop`，就用上面的 `claude mcp add`。
@@ -46,7 +48,7 @@ claude mcp add --scope user evolution-computer-use -- cmd /c npx -y evolution-co
 ```toml
 [mcp_servers.evolution-computer-use]
 command = "cmd"
-args = ["/c", "npx", "-y", "evolution-computer-use", "--desktop", "background"]
+args = ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
 # 录 2 分钟以内的视频、等浏览器排队都可能超过默认的 60 秒
 tool_timeout_sec = 180
 ```
@@ -58,9 +60,9 @@ tool_timeout_sec = 180
 ```json
 {
   "mcpServers": {
-    "evolution-computer-use": {
+    "evolution-computer-use-win": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "evolution-computer-use", "--desktop", "background"]
+      "args": ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
     }
   }
 }
@@ -68,31 +70,31 @@ tool_timeout_sec = 180
 
 ### 其他支持 MCP 的 Agent
 
-任何 stdio 方式的 MCP 客户端都能用：命令是 `npx -y evolution-computer-use [选项]`。服务器支持协议版本 2025-06-18、2025-03-26、2024-11-05，初始化时会把用法说明放在 `instructions` 里。截图以 MCP 的 `image` 内容返回，客户端要能把图片交给模型，`page_shot` 和 `desktop` 才有用。
+任何 stdio 方式的 MCP 客户端都能用：命令是 `npx -y evolution-computer-use-win [选项]`。服务器支持协议版本 2025-06-18、2025-03-26、2024-11-05，初始化时会把用法说明放在 `instructions` 里。截图以 MCP 的 `image` 内容返回，客户端要能把图片交给模型，`page_shot` 和 `desktop` 才有用。
 
 ### 从源码运行
 
 开发时，或者要用还没发布的改动：
 
 ```powershell
-git clone https://github.com/chenkezhen480/evolution-computer-use.git D:\tools\evolution-computer-use
-cd D:\tools\evolution-computer-use
+git clone https://github.com/thefreedoomdoor/evolution-computer-use-win.git D:\tools\evolution-computer-use-win
+cd D:\tools\evolution-computer-use-win
 npm install
 npm run build        # 生成 lib/
 ```
 
-然后把上面配置里的 `cmd /c npx -y evolution-computer-use` 换成 `node D:/tools/evolution-computer-use/lib/cli.js`。本地 clone 也能当 Claude Code 插件装：`/plugin marketplace add` 后面写本地路径。
+然后把上面配置里的 `cmd /c npx -y evolution-computer-use-win` 换成 `node D:/tools/evolution-computer-use-win/lib/cli.js`。本地 clone 也能当 Claude Code 插件装：`/plugin marketplace add` 后面写本地路径。
 
 ### 在 JS/TS 里直接嵌入
 
 不走 MCP 的宿主（比如自己写的 Agent 循环、DSH 插件）直接用库：
 
 ```powershell
-npm install evolution-computer-use
+npm install evolution-computer-use-win
 ```
 
 ```ts
-import { createComputerUse, INSTRUCTIONS } from 'evolution-computer-use';
+import { createComputerUse, INSTRUCTIONS } from 'evolution-computer-use-win';
 
 const computer = createComputerUse({
   dataDir: 'D:/agent-data/computer',      // procedures/、browser/、messages.jsonl 都在这里
@@ -112,13 +114,13 @@ const result = await computer.call(name, args, signal);   // { text, images?: [{
 ## 命令行
 
 ```text
-evolution-computer-use [serve] [选项]   以 MCP（stdio）方式运行
-evolution-computer-use resume [选项]    用户按了「停下」之后解除
-evolution-computer-use routines [选项]  跑一遍例行操作并打印结果，给计划任务用
-evolution-computer-use status [选项]    列出学会的操作和有问题的地方
+evolution-computer-use-win [serve] [选项]   以 MCP（stdio）方式运行
+evolution-computer-use-win resume [选项]    用户按了「停下」之后解除
+evolution-computer-use-win routines [选项]  跑一遍例行操作并打印结果，给计划任务用
+evolution-computer-use-win status [选项]    列出学会的操作和有问题的地方
 ```
 
-没有全局安装（`npm install -g evolution-computer-use`）的话，前面加 `npx -y`，比如 `npx -y evolution-computer-use resume`。
+没有全局安装（`npm install -g evolution-computer-use-win`）的话，前面加 `npx -y`，比如 `npx -y evolution-computer-use-win resume`。
 
 | 选项 | 说明 |
 | --- | --- |
@@ -181,7 +183,7 @@ dsh-world 在模拟站点上的对比实验：空结果算失败后，不报错�
 | `params` | `{ 名字: { type: string｜number｜boolean, required?, description? } }` |
 | `where` | 不写是网页操作；`desktop` 是后台模式走通的，`screen` 是前台模式走通的 |
 | `steps` | 1 到 40 步，每步只有一个动作 |
-| `onAlarm` | 为真时是例行操作，`procedure_routines` 或 `evolution-computer-use routines` 时自动跑；不能有必填参数和向外发出的步骤 |
+| `onAlarm` | 为真时是例行操作，`procedure_routines` 或 `evolution-computer-use-win routines` 时自动跑；不能有必填参数和向外发出的步骤 |
 | `summary` | 例行结果那一行的模板，可用 `{{count}}` 和脚本 `as` 存下的值 |
 | `messages` | 把 `extract` 的行记成消息，见「消息记录」 |
 
@@ -255,7 +257,7 @@ Agent 动手时屏幕顶部正中浮出一个深色胶囊「<名字>正在操作
 
 - 正在做的那一步作废，Agent 收到「用户按了停下……别重试，先问问用户」；正在录的立刻停在那里，之后不再给那个窗口发任何按键。
 - 按下时它没有正在做的一步，它的下一个工具结果后面会附上这句话。
-- 在你解除之前，所有动电脑的操作都会被拒绝（回看录好的还可以）。停下会记在 `<数据目录>/desktop-stopped`，Agent 重启也不会自动解除。确认没问题后在终端运行 `npx -y evolution-computer-use resume`（数据目录不是默认的就加 `--data`）。
+- 在你解除之前，所有动电脑的操作都会被拒绝（回看录好的还可以）。停下会记在 `<数据目录>/desktop-stopped`，Agent 重启也不会自动解除。确认没问题后在终端运行 `npx -y evolution-computer-use-win resume`（数据目录不是默认的就加 `--data`）。
 
 ## 思考浮窗（右上角）
 
@@ -296,7 +298,7 @@ Agent 动手时，屏幕右上角浮出一块深色面板：这一回合的状�
 
 ## 从 dsh-world 迁移
 
-操作文件格式完全相同。把 `<世界目录>/procedures/` 整个复制到 `<数据目录>/procedures/` 就能用，旧版本文件和 `目录.md` 也照样认；想保留各网站的登录，再把 `<世界目录>/browser/` 复制到 `<数据目录>/browser/`（复制前关掉那个浏览器）。dsh-world 里平铺在 `procedures/` 下的旧文件同样读成「未分类」。`onAlarm` 的操作在 dsh-world 里是闹钟前跑，这里改成 `procedure_routines` 或计划任务里的 `evolution-computer-use routines`。消息不再写进 `archive.sqlite`，而是 `messages.jsonl`。
+操作文件格式完全相同。把 `<世界目录>/procedures/` 整个复制到 `<数据目录>/procedures/` 就能用，旧版本文件和 `目录.md` 也照样认；想保留各网站的登录，再把 `<世界目录>/browser/` 复制到 `<数据目录>/browser/`（复制前关掉那个浏览器）。dsh-world 里平铺在 `procedures/` 下的旧文件同样读成「未分类」。`onAlarm` 的操作在 dsh-world 里是闹钟前跑，这里改成 `procedure_routines` 或计划任务里的 `evolution-computer-use-win routines`。消息不再写进 `archive.sqlite`，而是 `messages.jsonl`。
 
 ## 文件位置
 

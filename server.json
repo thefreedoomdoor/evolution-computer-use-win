@@ -1,16 +1,16 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.chenkezhen480/evolution-computer-use",
+  "name": "io.github.thefreedoomdoor/evolution-computer-use-win",
   "description": "Self-evolving computer use: a browser, the Windows desktop, and procedures it learns and repairs",
   "repository": {
-    "url": "https://github.com/chenkezhen480/evolution-computer-use",
+    "url": "https://github.com/thefreedoomdoor/evolution-computer-use-win",
     "source": "github"
   },
   "version": "0.1.0",
   "packages": [
     {
       "registryType": "npm",
-      "identifier": "evolution-computer-use",
+      "identifier": "evolution-computer-use-win",
       "version": "0.1.0",
       "transport": { "type": "stdio" }
     }

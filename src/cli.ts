@@ -11,13 +11,13 @@ import { serveMcp } from './mcp/server.ts';
 import { startThoughtOverlay } from './desktop/overlay.ts';
 import { errorText, Faults } from './shared/faults.ts';
 
-const HELP = `evolution-computer-use：会自己进化的电脑操作插件（MCP 服务器）
+const HELP = `evolution-computer-use-win：会自己进化的电脑操作插件（MCP 服务器）
 
 用法：
-  evolution-computer-use [serve] [选项]   以 MCP（stdio）方式运行，给 Agent 用
-  evolution-computer-use resume [选项]    用户按了「停下」之后，解除停下
-  evolution-computer-use routines [选项]  跑一遍例行操作（onAlarm），打印结果，给定时任务用
-  evolution-computer-use status [选项]    列出学会的操作
+  evolution-computer-use-win [serve] [选项]   以 MCP（stdio）方式运行，给 Agent 用
+  evolution-computer-use-win resume [选项]    用户按了「停下」之后，解除停下
+  evolution-computer-use-win routines [选项]  跑一遍例行操作（onAlarm），打印结果，给定时任务用
+  evolution-computer-use-win status [选项]    列出学会的操作
 
 选项：
   --data <目录>         数据目录，默认 ~/.evolution-computer-use
@@ -60,7 +60,7 @@ function parse(argv: string[]): { command: string; options: Options } {
   };
 }
 
-const log = (text: string) => { process.stderr.write(`[evolution-computer-use] ${text}\n`); };
+const log = (text: string) => { process.stderr.write(`[evolution-computer-use-win] ${text}\n`); };
 const version = () => (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
 
 function open(options: Options, hooks: { onToolsChanged?(): void; onHalt?(): void } = {}) {
@@ -80,7 +80,7 @@ function open(options: Options, hooks: { onToolsChanged?(): void; onHalt?(): voi
  */
 async function serve(options: Options): Promise<void> {
   const stopFile = join(options.data, STOP_FILE);
-  const resumeHint = `（解除：用户在终端运行 npx -y evolution-computer-use resume${options.data === resolve(join(homedir(), '.evolution-computer-use')) ? '' : ` --data "${options.data}"`}）`;
+  const resumeHint = `（解除：用户在终端运行 npx -y evolution-computer-use-win resume${options.data === resolve(join(homedir(), '.evolution-computer-use')) ? '' : ` --data "${options.data}"`}）`;
   let server: ReturnType<typeof serveMcp> | undefined;
   const computer = open(options, {
     onToolsChanged: () => server?.toolsChanged(),
@@ -93,7 +93,7 @@ async function serve(options: Options): Promise<void> {
       try { return await computer.call(name, args, signal); }
       catch (error) { throw new Error(errorText(error).includes(STOPPED) ? `${errorText(error)}${resumeHint}` : errorText(error), { cause: error }); }
     },
-  }, { input: process.stdin, output: process.stdout, log }, { name: 'evolution-computer-use', version: version(), instructions: INSTRUCTIONS });
+  }, { input: process.stdin, output: process.stdout, log }, { name: 'evolution-computer-use-win', version: version(), instructions: INSTRUCTIONS });
 
   const mode = options.desktop as DesktopMode;
   if (mode !== 'off') {

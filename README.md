@@ -1,10 +1,12 @@
-# evolution-computer-use
+# evolution-computer-use-win
 
 English | [简体中文](README.zh-CN.md)
 
 Self-evolving computer use for any agent.
 
 > Extracted from **[dsh-world](https://github.com/chenkezhen480/dsh-world)** 0.8, where it was "her own browser and the operations she learned", and freed from the DSH host. How procedures are stored, replayed and repaired was chosen by two controlled experiments run while building dsh-world; see [Experiments](#experiments).
+
+**This repository is the merger of two projects.** [evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use) — the browser of its own, the procedure library, the stop switch — and [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) — the Windows desktop mode and the thought/step overlay in the top-right corner — are now one MCP server, published here as `evolution-computer-use-win`. Both are MIT; see [NOTICE](NOTICE.md).
 
 - **A browser of its own**: the system's Edge (or Chrome) on a separate profile, driven over the DevTools Protocol (CDP). It never uses your mouse or keyboard and never touches your everyday browser.
 - **The user's computer** (Windows, only when the user turns it on):
@@ -23,7 +25,7 @@ No runtime dependencies: the browser side uses only Node's built-in `WebSocket` 
 
 ## Setup
 
-Requires Node.js 22.16 or later. There is nothing to download or build by hand: the configurations below run the [npm package](https://www.npmjs.com/package/evolution-computer-use) through `npx`, which fetches it on first use.
+Requires Node.js 22.16 or later. There is nothing to download or build by hand: the configurations below run the [npm package](https://www.npmjs.com/package/evolution-computer-use-win) through `npx`, which fetches it on first use.
 
 `--desktop` defaults to `off` (the agent's own browser only); to let the agent use your computer, pass `background` or `foreground`, as described in [The user's computer](#the-users-computer). It is only the initial state: while running, the agent can switch between off, background and foreground with the `desktop_mode` tool, no restart needed.
 
@@ -32,7 +34,7 @@ On Windows, `npx` is a batch file (`npx.cmd`) that some clients cannot start dir
 ### Claude Code
 
 ```powershell
-claude mcp add --scope user evolution-computer-use -- cmd /c npx -y evolution-computer-use --desktop background
+claude mcp add --scope user evolution-computer-use-win -- cmd /c npx -y evolution-computer-use-win --desktop background
 ```
 
 `--scope user` makes it available in every project; leave it out to add it to the current project only.
@@ -40,8 +42,8 @@ claude mcp add --scope user evolution-computer-use -- cmd /c npx -y evolution-co
 It also installs as a plugin, which Claude Code fetches from GitHub with git and runs from source:
 
 ```text
-/plugin marketplace add chenkezhen480/evolution-computer-use
-/plugin install evolution-computer-use
+/plugin marketplace add thefreedoomdoor/evolution-computer-use-win
+/plugin install evolution-computer-use-win
 ```
 
 The plugin starts with desktop control off. To pass `--desktop`, use `claude mcp add` as above.
@@ -53,7 +55,7 @@ The plugin starts with desktop control off. To pass `--desktop`, use `claude mcp
 ```toml
 [mcp_servers.evolution-computer-use]
 command = "cmd"
-args = ["/c", "npx", "-y", "evolution-computer-use", "--desktop", "background"]
+args = ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
 # Recording up to two minutes of video, or waiting in the browser queue, can exceed the default 60 s
 tool_timeout_sec = 180
 ```
@@ -65,9 +67,9 @@ These clients take the `mcpServers` form (`.cursor/mcp.json` for Cursor, `claude
 ```json
 {
   "mcpServers": {
-    "evolution-computer-use": {
+    "evolution-computer-use-win": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "evolution-computer-use", "--desktop", "background"]
+      "args": ["/c", "npx", "-y", "evolution-computer-use-win", "--desktop", "background"]
     }
   }
 }
@@ -77,7 +79,7 @@ These clients take the `mcpServers` form (`.cursor/mcp.json` for Cursor, `claude
 
 Any stdio MCP client works.
 
-- **Command:** `npx -y evolution-computer-use [options]`.
+- **Command:** `npx -y evolution-computer-use-win [options]`.
 - **Protocol versions:** 2025-06-18, 2025-03-26 and 2024-11-05.
 - **Instructions:** the usage guide is sent in `instructions` at initialization.
 - **Images:** screenshots come back as MCP `image` content. `page_shot` and `desktop` are only useful if the client passes images to the model.
@@ -87,24 +89,24 @@ Any stdio MCP client works.
 For development, or to run changes not yet published:
 
 ```powershell
-git clone https://github.com/chenkezhen480/evolution-computer-use.git D:\tools\evolution-computer-use
-cd D:\tools\evolution-computer-use
+git clone https://github.com/thefreedoomdoor/evolution-computer-use-win.git D:\tools\evolution-computer-use-win
+cd D:\tools\evolution-computer-use-win
 npm install
 npm run build        # builds lib/
 ```
 
-Then, in the configurations above, replace `cmd /c npx -y evolution-computer-use` with `node D:/tools/evolution-computer-use/lib/cli.js`. A local clone also works as a Claude Code plugin: give its path to `/plugin marketplace add`.
+Then, in the configurations above, replace `cmd /c npx -y evolution-computer-use-win` with `node D:/tools/evolution-computer-use-win/lib/cli.js`. A local clone also works as a Claude Code plugin: give its path to `/plugin marketplace add`.
 
 ### Embedding in JS/TS
 
 Hosts that do not speak MCP (your own agent loop, a DSH plugin) use the library directly:
 
 ```powershell
-npm install evolution-computer-use
+npm install evolution-computer-use-win
 ```
 
 ```ts
-import { createComputerUse, INSTRUCTIONS } from 'evolution-computer-use';
+import { createComputerUse, INSTRUCTIONS } from 'evolution-computer-use-win';
 
 const computer = createComputerUse({
   dataDir: 'D:/agent-data/computer',      // holds procedures/, browser/ and messages.jsonl
@@ -134,13 +136,13 @@ The `messages` option takes your own `MessageSink`, to file the messages procedu
 ## Command line
 
 ```text
-evolution-computer-use [serve] [options]   run as an MCP server over stdio
-evolution-computer-use resume [options]    release the agent after the user pressed "stop"
-evolution-computer-use routines [options]  run the routine procedures once and print the results (for schedulers)
-evolution-computer-use status [options]    list learned procedures and anything broken
+evolution-computer-use-win [serve] [options]   run as an MCP server over stdio
+evolution-computer-use-win resume [options]    release the agent after the user pressed "stop"
+evolution-computer-use-win routines [options]  run the routine procedures once and print the results (for schedulers)
+evolution-computer-use-win status [options]    list learned procedures and anything broken
 ```
 
-Without a global install (`npm install -g evolution-computer-use`), put `npx -y` in front, for example `npx -y evolution-computer-use resume`.
+Without a global install (`npm install -g evolution-computer-use-win`), put `npx -y` in front, for example `npx -y evolution-computer-use-win resume`.
 
 | Option | Meaning |
 | --- | --- |
@@ -224,7 +226,7 @@ See [Experiments](#experiments).
 | `params` | `{ name: { type: string｜number｜boolean, required?, description? } }` |
 | `where` | Omitted for web procedures; `desktop` for background mode, `screen` for foreground mode |
 | `steps` | 1–40 steps, one action each |
-| `onAlarm` | A routine: run by `procedure_routines` or `evolution-computer-use routines`; no required parameters, no outward steps |
+| `onAlarm` | A routine: run by `procedure_routines` or `evolution-computer-use-win routines`; no required parameters, no outward steps |
 | `summary` | Template for the routine's result line; may use `{{count}}` and values kept by `script` with `as` |
 | `messages` | Files the rows of `extract` as messages; see [Message log](#message-log) |
 
@@ -337,7 +339,7 @@ To stop it, press Esc twice within half a second, or click the capsule's button:
 - If no step was under way, the agent's next tool result carries the same message.
 - Until you release it, every action on the computer is refused; looking at a finished recording still works.
   - The stop is kept in `<data>/desktop-stopped`, so restarting the agent does not lift it.
-  - When you are satisfied, run `npx -y evolution-computer-use resume` in a terminal, adding `--data` if the data folder is not the default.
+  - When you are satisfied, run `npx -y evolution-computer-use-win resume` in a terminal, adding `--data` if the data folder is not the default.
 
 ## Thought overlay (top right)
 
@@ -400,7 +402,7 @@ Embedding hosts can plug in their own `MessageSink`.
 
 - **Procedures:** the file format is identical. Copy `<world>/procedures/` to `<data>/procedures/`; kept versions and `目录.md` notes work as before, and dsh-world's flat legacy files are still read as `未分类`.
 - **Logins:** to keep your site logins, also copy `<world>/browser/` to `<data>/browser/`, with that browser closed.
-- **Routines:** `onAlarm` procedures ran before the alarm in dsh-world. Here they run through `procedure_routines` or a scheduled `evolution-computer-use routines`.
+- **Routines:** `onAlarm` procedures ran before the alarm in dsh-world. Here they run through `procedure_routines` or a scheduled `evolution-computer-use-win routines`.
 - **Messages:** they are written to `messages.jsonl` instead of `archive.sqlite`.
 
 ## Files
