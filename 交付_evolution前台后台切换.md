@@ -228,3 +228,30 @@ dsh-evolution-desktop-mode  ──activity.json──▶  src/desktop/overlay.ts
 - 插件 `README.md`：新增「只在 Agent 真的操作这台电脑时出现」条目；「回合结束保留 20 秒」改为「随即收起（写侧保留 `lingerUntil`，读侧不消费）」；上游链接改为 `https://github.com/Yu-tao-Li/dsh-computer-use-win`。
 - 仓库 `README.zh-CN.md` / `README.md`：浮窗小节补同样的「什么时候出现」说明，英文同步。
 - 插件 `package.json` 版本 `0.3.0`。
+
+---
+
+## 修「出现了两个悬浮窗」（2026-11-23 第三轮）
+
+根因在**读侧的单实例锁**（`src/desktop/overlay.ts`），与写侧无关：
+
+1. **刷新锁会截断文件**：`refreshOverlayLock` 每秒用 `writeFileSync(lockFile, pid)` 刷新，而它会先把文件截成 0 字节再写。另一个进程恰好在这瞬间 `readFileSync` 读到空串 → `parseInt('')=NaN` → `pidAlive(NaN)=false` → 判定「持锁者已死」→ `renameSync` 抢锁。于是两块浮窗每隔一两分钟来回倒手（数据目录里攒下 11 个 `overlay.lock.<hex>.stale` 就是证据）。
+2. **丢锁不关助手**：抢输的那个只把 `helper` 引用置空，不关 PowerShell 助手；助手侧 `ReadCommands()` 要 stdin EOF 才退出，管道还开着就永远不退 → 窗口一直停在屏幕上。实测两个 MCP 进程各自泄漏了 5 块窗口（10 个 `powershell.exe windows-takeover` 常驻）。
+3. **助手意外退出后永不重开**：`exit` 处理器不清 `owner`，下一轮走刷新分支而 `helper` 已是 undefined，重开逻辑只在 `!owner` 分支里，浮窗会静默消失。
+
+改法：
+
+- `refreshOverlayLock` 改成只 `utimesSync` 推 mtime，**绝不重写内容**；读到空串时不当成丢锁（下一轮再看）。
+- `tryClaimOverlayLock` 增加保护：锁文件刚创建、内容还没落盘（空且 mtime 不足 200ms）时返回 `held`，不抢。
+- 新增 `retireHelper()`：丢锁/让位时先 `stdin.end()` 让助手读到 EOF 自己退出，2 秒后没走再 `kill`，绝不泄漏窗口。
+- `exit` 处理器改成把 `owner` 归零，下一轮 tick 立即重新认领并重开助手；只有「连续 3 次还没正常应答就退出」才放弃（`failures` 计数器，收到任一命令应答就清零）。
+- 顺手清理了数据目录里 11 个 `.stale` 残留和 10 个泄漏的助手进程。
+
+验证：
+
+- `tests/desktopOverlay.test.ts` 新增 4 个用例（刷新不截断内容、刚创建的空锁不被抢/过期空锁可接管、他人刷新被拒、**并发读者一次都读不到空内容**），`desktopOverlay+desktopMode+desktop` 共 36 个用例全过。
+- 用旧写法（`writeFileSync` 每秒重写）跑同样的并发读者实验：31946 次采样里读到空内容 473 次 → 证明新测试确实能抓住这个 bug，新写法为 0 次。
+- `npx tsc --noEmit` 通过，`npm run build` 重新生成 `lib/`。
+
+注意：正在运行的 MCP 进程加载的还是旧 `lib/`，**需要重启 DSH（或重连两条 MCP 连接）后新逻辑才生效**。
+

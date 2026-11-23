@@ -15,7 +15,7 @@
  * 环境变量：EVOCU_ACTIVITY_FILE（默认 ~/.evolution-computer-use/activity.json）
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { helperStrings } from './overlay-strings.ts';
@@ -87,25 +87,41 @@ export function tryClaimOverlayLock(lockFile: string, pid = process.pid, now = D
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return 'held';
     }
-    let holder = NaN;
-    try { holder = parseInt(readFileSync(lockFile, 'utf8').trim(), 10); } catch { /* 读不到就按过期处理 */ }
+    let raw = '';
+    try { raw = readFileSync(lockFile, 'utf8').trim(); } catch { /* 读不到就按过期处理 */ }
+    const holder = parseInt(raw, 10);
     let fresh = false;
-    try { fresh = now - statSync(lockFile).mtimeMs < LOCK_STALE_MS; } catch { fresh = false; }
+    let age = Number.POSITIVE_INFINITY;
+    try { age = now - statSync(lockFile).mtimeMs; fresh = age < LOCK_STALE_MS; } catch { fresh = false; }
     if (fresh && holder === pid) return 'claimed';   // 已经是自己的，重复认领算成功
     if (fresh && pidAlive(holder)) return 'held';
+    // 文件刚创建、内容还没落盘（读到空串）时不要抢：那多半是别的进程正在创建，下一轮再看。
+    if (!raw && age < 200) return 'held';
     try { renameSync(lockFile, lockFile + '.' + Math.random().toString(16).slice(2) + '.stale'); } catch { return 'held'; }
     return create();
   };
   return create();
 }
 
-/** 持有者刷新锁；锁已经不属于自己（被别人抢走）时不动它。 */
-export function refreshOverlayLock(lockFile: string, pid = process.pid): boolean {
-  try {
-    if (parseInt(readFileSync(lockFile, 'utf8').trim(), 10) !== pid) return false;
-    writeFileSync(lockFile, String(pid));
+/**
+ * 持有者刷新锁：只把 mtime 推新，绝不重写内容。
+ *
+ * 早先用 writeFileSync 重写 pid，而它会先把文件截断成 0 字节再写；并发的另一个进程
+ * 正好在这瞬间读到空串 → 解析成 NaN → 当成「持锁者已死」→ 改名抢占。两块浮窗就是这样
+ * 每隔一两分钟来回倒手。改成 utimesSync 只 touch 时间后，内容始终是完整的 pid。
+ */
+export function refreshOverlayLock(lockFile: string, pid = process.pid, now = Date.now()): boolean {
+  let raw = '';
+  try { raw = readFileSync(lockFile, 'utf8').trim(); } catch { return false; }
+  const holder = parseInt(raw, 10);
+  if (holder === pid) {
+    try { utimesSync(lockFile, now / 1000, now / 1000); } catch { /* touch 不了就等下一轮 */ }
     return true;
-  } catch { return false; }
+  }
+  // 读到空串只可能是别的进程（旧代码）正在重写它：不当成自己丢了锁，
+  // 否则会让出窗口又马上抢回来，来回抖。下一轮读到完整内容再判断。
+  if (!raw || !Number.isSafeInteger(holder) || holder <= 0) return true;
+  return false;
 }
 
 /** 退出时放锁，只放自己那份。 */
@@ -139,14 +155,15 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
 
   let child: ChildProcess | undefined;
   let stderr = '';
-  let spawns = 0;
+  let failures = 0;
   let owner = false;
   let saidWaiting = false;
   let givingUp = false;
   let stopping = false;
+  /** 是我们主动关掉的助手进程：它们的 exit 事件不用当成「意外退出」。 */
+  const retired = new WeakSet<ChildProcess>();
 
   const spawnHelper = () => {
-    spawns++;
     const eventName = 'Local\\EVO-CU-OVERLAY-' + Math.random().toString(16).slice(2);
     const proc = spawn('powershell.exe', [
       '-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass',
@@ -156,17 +173,20 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
     proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     proc.on('error', (error) => log('[thought-overlay] 助手启动失败：' + error.message));
     proc.on('exit', () => {
-      if (stopping) return;
+      if (stopping || retired.has(proc)) return;
       child = undefined;
       helper = undefined;
       last = '';
-      if (spawns >= MAX_SPAWNS) {
+      if (++failures >= MAX_SPAWNS) {
         givingUp = true;
         owner = false;
         releaseOverlayLock(lockFile);
         log('[thought-overlay] 助手起不来，浮窗这次不显示了（重启服务器会再试）');
         return;
       }
+      // 早先这里 owner 还是 true，下一轮 tick 走 refresh 分支、helper 是空的，
+      // 于是「重开」永远不会发生，浮窗静默消失。这里把 owner 归零，下一轮会重新认领并 spawn。
+      owner = false;
       log('[thought-overlay] 助手退出了，下一轮重开');
     });
 
@@ -180,6 +200,7 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
         if (reply.id !== undefined && pending.has(reply.id)) {
           pending.get(reply.id)!();
           pending.delete(reply.id);
+          failures = 0;   // 助手能应答就说明它活着，连续失败清零
         }
       }
     });
@@ -197,6 +218,25 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
   let helper: ReturnType<typeof spawnHelper> | undefined;
   let last = '';
 
+  /**
+   * 关掉手上的助手：先关 stdin 让它读到 EOF 自己退出，2 秒还没走就强杀。
+   *
+   * 早先丢锁时只把 JS 引用丢掉（helper=undefined），stdio 管道还开着，助手等不到 EOF，
+   * 窗口就一直画着最后一次的内容留在屏幕上；两边锁一倒手就攒出好几块「悬浮窗」。
+   */
+  const retireHelper = (why: string) => {
+    const running = helper;
+    helper = undefined;
+    child = undefined;
+    last = '';
+    if (!running) return;
+    retired.add(running.proc);
+    log('[thought-overlay] ' + why);
+    try { running.proc.stdin?.end(); } catch { /* 已经关了 */ }
+    const timer = setTimeout(() => { try { running.proc.kill(); } catch { /* 早就退了 */ } }, 2000);
+    timer.unref();
+  };
+
   const tick = () => {
     if (givingUp) return;
     if (!owner) {
@@ -210,11 +250,9 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
       child = helper.proc;
       last = '';
     } else if (!refreshOverlayLock(lockFile)) {
-      // 锁被别人判过期抢走了，跟着让位，免得同时两块浮窗。
+      // 锁被别人拿走了：让位，并且必须关掉自己的助手，不能只丢引用。
       owner = false;
-      helper = undefined;
-      child = undefined;
-      last = '';
+      retireHelper('浮窗已由另一个进程接管，关掉本进程的助手');
       return;
     }
 

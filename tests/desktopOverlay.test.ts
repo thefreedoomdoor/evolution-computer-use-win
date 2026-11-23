@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tryClaimOverlayLock, refreshOverlayLock, releaseOverlayLock } from '../src/desktop/overlay.ts';
@@ -57,6 +57,67 @@ test('refresh and release only touch your own lock', () => {
     assert.equal(tryClaimOverlayLock(file, 6666), 'held');
     releaseOverlayLock(file, process.pid);
     assert.equal(tryClaimOverlayLock(file, 6666), 'claimed');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('refresh bumps the lock mtime and never truncates its content', () => {
+  const d = dir();
+  const file = join(d, 'overlay.lock');
+  try {
+    assert.equal(tryClaimOverlayLock(file, process.pid), 'claimed');
+    const size = statSync(file).size;
+    for (let i = 1; i <= 200; i++) {
+      assert.equal(refreshOverlayLock(file, process.pid, Date.now() + i * 1000), true);
+      // 刷新期间内容必须始终是完整 pid：早先 writeFileSync 会截断成 0 字节，
+      // 别的进程读到空串就把持锁者当成已死，两块浮窗因此来回倒手。
+      assert.equal(readFileSync(file, 'utf8'), String(process.pid));
+      assert.equal(statSync(file).size, size);
+    }
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('an empty lock that was just created is not stolen, a stale one is', () => {
+  const d = dir();
+  const file = join(d, 'overlay.lock');
+  try {
+    writeFileSync(file, '');
+    const now = Date.now();
+    // 刚创建、内容还没落盘：不能当成「持锁者已死」
+    assert.equal(tryClaimOverlayLock(file, 4444, now), 'held');
+    // 一秒后仍是空的（内容真丢了）：按过期接管
+    assert.equal(tryClaimOverlayLock(file, 4444, now + 1000), 'claimed');
+    assert.equal(readFileSync(file, 'utf8'), '4444');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('refresh by a foreign pid is refused and leaves the lock intact', () => {
+  const d = dir();
+  const file = join(d, 'overlay.lock');
+  try {
+    assert.equal(tryClaimOverlayLock(file, process.pid), 'claimed');
+    assert.equal(refreshOverlayLock(file, 8888), false);
+    assert.equal(readFileSync(file, 'utf8'), String(process.pid));
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('a concurrent reader never observes an empty lock while the holder refreshes', async () => {
+  const d = dir();
+  const file = join(d, 'overlay.lock');
+  const { spawn } = await import('node:child_process');
+  try {
+    assert.equal(tryClaimOverlayLock(file, process.pid), 'claimed');
+    const script = "const fs=require('node:fs');let n=0,bad=0;const end=Date.now()+1200;"
+      + "while(Date.now()<end){n++;if(fs.readFileSync(process.argv[1],'utf8').trim()==='')bad++;}"
+      + "process.stdout.write(JSON.stringify({n,bad}));";
+    const child = spawn(process.execPath, ['-e', script, file], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let out = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    const timer = setInterval(() => { refreshOverlayLock(file, process.pid); }, 1);
+    await new Promise((resolve) => child.on('close', resolve));
+    clearInterval(timer);
+    const result = JSON.parse(out) as { n: number; bad: number };
+    assert.ok(result.n > 100, '读锁的进程应该有足够多的采样，实际 ' + result.n);
+    assert.equal(result.bad, 0, '读锁的进程一次都不该读到空内容');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
