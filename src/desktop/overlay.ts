@@ -97,7 +97,10 @@ export function tryClaimOverlayLock(lockFile: string, pid = process.pid, now = D
     if (fresh && pidAlive(holder)) return 'held';
     // 文件刚创建、内容还没落盘（读到空串）时不要抢：那多半是别的进程正在创建，下一轮再看。
     if (!raw && age < 200) return 'held';
-    try { renameSync(lockFile, lockFile + '.' + Math.random().toString(16).slice(2) + '.stale'); } catch { return 'held'; }
+    const stale = lockFile + '.' + Math.random().toString(16).slice(2) + '.stale';
+    try { renameSync(lockFile, stale); } catch { return 'held'; }
+    // 改名只是让抢占原子化；抢下来的过期锁是垃圾，立刻删掉，别在数据目录里越攒越多。
+    try { unlinkSync(stale); } catch { /* 删不掉就算了 */ }
     return create();
   };
   return create();

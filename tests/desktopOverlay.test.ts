@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tryClaimOverlayLock, refreshOverlayLock, releaseOverlayLock } from '../src/desktop/overlay.ts';
@@ -41,6 +41,8 @@ test('a holder that stopped refreshing is stale after the window', () => {
     assert.equal(tryClaimOverlayLock(file, 3333), 'held');
     // pretend 10 minutes passed: the lock is stale, so takeover wins even for a live holder
     assert.equal(tryClaimOverlayLock(file, 3333, Date.now() + 600_000), 'claimed');
+    // 抢下来的过期锁应该立刻删掉，数据目录里不能攒 .stale 垃圾
+    assert.deepEqual(readdirSync(d).filter((n) => n.includes('.stale')), []);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
