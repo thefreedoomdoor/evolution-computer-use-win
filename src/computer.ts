@@ -9,6 +9,7 @@ import type { ToolResult, ToolSpec } from './tool.ts';
 import { createDesktop, type Desktop } from './desktop/desktop.ts';
 import { createDesktopDriver, type DesktopDriver } from './desktop/driver.ts';
 import { createScreen, type Screen } from './desktop/screen.ts';
+import type { DesktopMode } from './desktop/mode.ts';
 import { createInbox } from './inbox/inbox.ts';
 
 /** A helper as the module uses it; only foreground mode's is started ahead of use. */
@@ -113,6 +114,7 @@ export function createComputerUse(options: ComputerUseOptions) {
     if (cached?.revision === current) return cached.tools;
     const list = computerTools({
       browser, library, ...(messages ? { messages } : {}), routines: () => routines(), health: () => faults.list(),
+      mode: desktopMode, setMode: setDesktopMode,
       ...(desktopUse ? { desktop: desktopUse.desktop } : {}), ...(desktopUse?.foreground ? { screen: desktopUse.foreground.screen } : {}),
       ...(desktopUse?.inbox ? { inbox: readMail } : {}),
     });
@@ -124,6 +126,58 @@ export function createComputerUse(options: ComputerUseOptions) {
     const lines = notices.splice(0);
     if (mailbox.length && !mailHinted) { lines.push('（信箱有新动静，手头的事做完了用 inbox_read 看。）'); mailHinted = true; }
     return lines.length ? `\n${lines.join('\n')}` : '';
+  }
+
+  /** Which of the three states the user's computer is in now. */
+  function desktopMode(): DesktopMode {
+    if (desktopUse?.foreground) return 'foreground';
+    return desktopUse ? 'background' : 'off';
+  }
+  /** Desktop control, on or off; the helper itself starts only when the agent first acts. Returns why it could not, or nothing. */
+  function setDesktop(on: boolean): string | undefined {
+    const before = revision();
+    if (!on) { stopDesktop(); faults.clear('desktop'); changed(before); return undefined; }
+    if (desktopUse) return undefined;
+    if (!windows()) { faults.set('desktop', '桌面控制目前只支持 Windows'); return '桌面控制目前只支持 Windows'; }
+    const driver = options.desktopDriver?.(events) ?? createDesktopDriver({ faults, events });
+    const desktop = createDesktop({ driver, companion, signFault });
+    desktopUse = { driver, desktop, ...(options.inbox === false ? {} : { inbox: startInbox(options.inbox ?? {}) }) };
+    faults.clear('desktop');
+    changed(before);
+    return undefined;
+  }
+  /**
+   * Foreground mode, on top of desktop control: turning it on asks the user, through UAC, to let a helper run as
+   * administrator, and the desktop tool works the whole screen until it is turned off or the process ends. Nothing
+   * keeps it across a restart, so each time it is on the user has approved it. Returns why it could not, or nothing.
+   */
+  async function setForeground(on: boolean): Promise<string | undefined> {
+    const before = revision();
+    if (!on) { stopForeground(); changed(before); return undefined; }
+    if (!desktopUse) return '先打开桌面控制';
+    if (desktopUse.foreground) return undefined;
+    const driver = options.foregroundDriver?.(events) ?? createDesktopDriver({ faults, events, elevated: true });
+    try { await driver.start?.(); }
+    catch (error) { driver.stop(); return errorText(error); }
+    if (!desktopUse) { driver.stop(); return '桌面控制已经关掉了'; }
+    desktopUse.foreground = { driver, screen: createScreen({ hands: driver, eyes: desktopUse.driver, companion, signFault }) };
+    changed(before);
+    return undefined;
+  }
+  /**
+   * One switch for the three states. `foreground` asks the user through UAC; when that request is refused the
+   * background mode stays on, so a refusal never leaves the agent without the computer it already had.
+   */
+  async function setDesktopMode(mode: DesktopMode): Promise<string | undefined> {
+    if (mode === 'off') { setDesktop(false); faults.clear('foreground-mode'); return undefined; }
+    const why = setDesktop(true);
+    if (why) return why;
+    if (mode === 'background') { faults.clear('foreground-mode'); return await setForeground(false); }
+    const refused = await setForeground(true);
+    // A refused UAC prompt is worth saying out loud; the background mode the agent already had stays on.
+    if (refused) faults.set('foreground-mode', `前台模式没有打开，用的是后台模式：${refused}`);
+    else faults.clear('foreground-mode');
+    return refused;
   }
 
   return {
@@ -141,37 +195,11 @@ export function createComputerUse(options: ComputerUseOptions) {
     },
     desktopOn: () => desktopUse !== undefined,
     foregroundOn: () => desktopUse?.foreground !== undefined,
-    /** Desktop control, on or off; the helper itself starts only when the agent first acts. Returns why it could not, or nothing. */
-    setDesktop(on: boolean): string | undefined {
-      const before = revision();
-      if (!on) { stopDesktop(); faults.clear('desktop'); changed(before); return undefined; }
-      if (desktopUse) return undefined;
-      if (!windows()) { faults.set('desktop', '桌面控制目前只支持 Windows'); return '桌面控制目前只支持 Windows'; }
-      const driver = options.desktopDriver?.(events) ?? createDesktopDriver({ faults, events });
-      const desktop = createDesktop({ driver, companion, signFault });
-      desktopUse = { driver, desktop, ...(options.inbox === false ? {} : { inbox: startInbox(options.inbox ?? {}) }) };
-      faults.clear('desktop');
-      changed(before);
-      return undefined;
-    },
-    /**
-     * Foreground mode, on top of desktop control: turning it on asks the user, through UAC, to let a helper run as
-     * administrator, and the desktop tool works the whole screen until it is turned off or the process ends. Nothing
-     * keeps it across a restart, so each time it is on the user has approved it. Returns why it could not, or nothing.
-     */
-    async setForeground(on: boolean): Promise<string | undefined> {
-      const before = revision();
-      if (!on) { stopForeground(); changed(before); return undefined; }
-      if (!desktopUse) return '先打开桌面控制';
-      if (desktopUse.foreground) return undefined;
-      const driver = options.foregroundDriver?.(events) ?? createDesktopDriver({ faults, events, elevated: true });
-      try { await driver.start?.(); }
-      catch (error) { driver.stop(); return errorText(error); }
-      if (!desktopUse) { driver.stop(); return '桌面控制已经关掉了'; }
-      desktopUse.foreground = { driver, screen: createScreen({ hands: driver, eyes: desktopUse.driver, companion, signFault }) };
-      changed(before);
-      return undefined;
-    },
+    /** off / background / foreground, as one word rather than something the host has to infer. */
+    desktopMode,
+    setDesktop,
+    setForeground,
+    setDesktopMode,
     /** Stops the agent as the banner's stop button does: every action on the computer is refused until `release`. */
     halt,
     /** The user lets the agent use the computer again after a stop. */
@@ -185,13 +213,13 @@ export function createComputerUse(options: ComputerUseOptions) {
         name, guide: guide.trim() !== '',
         operations: library.list().filter(entry => entry.procedure.category === name).map(({ procedure, path }) => ({ name: procedure.name, description: procedure.description, onAlarm: procedure.onAlarm === true, last: library.lastRun(path) ?? null })),
       })),
-      desktop: desktopUse ? { running: desktopUse.driver.running(), foreground: desktopUse.foreground !== undefined, halted: desktopUse.desktop.halted(), recent: (desktopUse.foreground?.screen ?? desktopUse.desktop).recent().slice(0, 5) } : null,
+      desktop: desktopUse ? { running: desktopUse.driver.running(), mode: desktopMode(), foreground: desktopUse.foreground !== undefined, halted: desktopUse.desktop.halted(), recent: (desktopUse.foreground?.screen ?? desktopUse.desktop).recent().slice(0, 5) } : null,
       inbox: desktopUse?.inbox ? { ...desktopUse.inbox.status(), unread: mailbox.length } : null,
       faults: faults.list(),
     }),
     /** Brings the agent's browser window forward, for the user to log in or watch. */
     show: () => browser.show(),
-    stop: () => { browser.stop(); stopDesktop(); library.clearFaults(); faults.clear('computer', 'desktop'); },
+    stop: () => { browser.stop(); stopDesktop(); library.clearFaults(); faults.clear('computer', 'desktop', 'foreground-mode'); },
   };
 }
 export type ComputerUse = ReturnType<typeof createComputerUse>;

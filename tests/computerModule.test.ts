@@ -78,7 +78,7 @@ test('the desktop switch adds and removes the desktop tool and tells the host; o
   assert.equal(computer.setDesktop(true), undefined);
   assert.equal(changed, 1);
   assert.equal(names(computer).filter(name => name === 'desktop').length, 1);
-  assert.deepEqual(computer.status().desktop, { running: false, foreground: false, halted: false, recent: [] });
+  assert.deepEqual(computer.status().desktop, { running: false, mode: 'background', foreground: false, halted: false, recent: [] });
   computer.setDesktop(true);
   assert.equal(changed, 1, 'turning on what is on changes nothing');
   computer.setDesktop(false);

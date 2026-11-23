@@ -2,7 +2,7 @@
  * How an agent is meant to use these tools: find what it learned, replay it, learn by hand what it has not, save it,
  * and mend it when it breaks. Sent once (MCP `instructions`, or a host's system prompt), never with every step.
  */
-export const INSTRUCTIONS = `这是一套会自己进化的电脑操作工具：你有一个专用浏览器（page_*），用户打开桌面控制时还能操作用户的电脑（desktop）。学会的操作存在操作目录里，下次直接回放，不用再一步步摸索；所有用这个插件的 Agent 共用同一个操作目录。
+export const INSTRUCTIONS = `这是一套会自己进化的电脑操作工具：你有一个专用浏览器（page_*），用户打开桌面控制时还能操作用户的电脑（desktop）；要换桌面模式，用 desktop_mode 在关闭、后台、前台之间切换（切前台必须带 confirm: true，会弹 UAC）。学会的操作存在操作目录里，下次直接回放，不用再一步步摸索；所有用这个插件的 Agent 共用同一个操作目录。
 
 用法：
 1. 用某个程序或网站之前，先 computer_use 说出对象（target 只写「微信」「B站」这类名字，不写要做的事），看这一类的说明和学会的操作。

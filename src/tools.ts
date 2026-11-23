@@ -9,6 +9,7 @@ import { messageRecords, type MessageSink } from './procedures/messages.ts';
 import { checkArgs, cut, failureText, fallbackText, noteRun, resultText, runVersions, type Args } from './procedures/run.ts';
 import { desktopAdvice, isWebAddress, WEB_ONLY, type MessageMap } from './procedures/format.ts';
 import { DESKTOP_KEYS, type Desktop, type DesktopInput, type DesktopResult } from './desktop/desktop.ts';
+import { DESKTOP_MODES, isDesktopMode, type DesktopMode } from './desktop/mode.ts';
 
 const DESKTOP_NOTE = `操作用户的电脑（后台模式）：看当前窗口的截图，按图上的像素操作；输入直接投给那个窗口，不动用户的鼠标、不抢焦点，用户用着电脑也能用。学会的操作先用 computer_use 找。以管理员权限运行的程序（很多游戏）后台够不着，要用就请用户切到前台模式。action 取一种：open（app 写程序名，打开它当作当前窗口，托盘里的会点开；不写就列出开着的窗口）｜shot（再截一张）｜click（x、y 是截图上的像素；double 双击，right 右键，hold 按住几秒是长按）｜drag（从 x、y 按住拖到 x2、y2 松开；hold 先按住几秒再拖，right 用右键）｜type（text；给 x、y 就先点那里；submit 再回车）｜press（key：${DESKTOP_KEYS}；hold 按住几秒）｜scroll（direction 为 up/down/left/right，可加 x、y）｜zoom（截图上 x、y 到 x2、y2 放大看）｜record（看视频这类会动的：先让它播起来，录 seconds 秒，最多 600；every 每几秒一帧，默认 1；pause 为 false 时录完不暂停）｜stop（停下正在录的）｜review（看录好的：不带参数看全片，from、to 细看一段，at 看某一秒）。每步之后都有新截图，自己看做对了没有；没反应就换个办法，别重复同一下。`;
 /** Foreground mode: the same actions over the whole screen with the real mouse and keyboard. */
@@ -24,6 +25,10 @@ export interface ToolsDeps {
   desktop?: Pick<Desktop, 'act'>;
   /** Foreground mode is on: the desktop tool works the whole screen through these instead; saved operations still replay through `desktop`. */
   screen?: Pick<Desktop, 'act'>;
+  /** The mode the user's computer is in now; absent when the host does not offer desktop control at all. */
+  mode?(): DesktopMode;
+  /** Switches that mode; returns why it could not, or nothing. Asked for `foreground` it goes through UAC. */
+  setMode?(mode: DesktopMode): Promise<string | undefined>;
   /** The routine: every `onAlarm` procedure once, a line each. */
   routines(): Promise<string | undefined>;
   /** What the inbox gathered since it was last read; absent when the inbox is off. */
@@ -116,16 +121,29 @@ export function computerTools(deps: ToolsDeps): ToolSpec[] {
     } }),
   ];
   const inbox = deps.inbox;
+  /** The switch itself stays offered whatever the mode, or turning it back on could only be done outside the agent. */
+  const switching: ToolSpec[] = !deps.setMode ? [] : [
+    defineTool({ name: 'desktop_mode', description: `设置怎么操作用户的电脑，现在：${deps.mode?.() ?? 'off'}。mode 取 off（关掉，不再用用户的电脑）｜background（后台：只往当前窗口投递输入，不动用户的鼠标、不抢焦点，用户用着电脑也能用）｜foreground（前台：整个屏幕，真的鼠标键盘，用户的鼠标会跟着动，要管理员权限）。切到前台等于接管用户的鼠标键盘，必须先问用户同不同意，同意了再带 confirm: true 调用；不带 confirm 不会去请求管理员权限。从后台切到前台失败时后台模式会留着。`, parameters: {
+      mode: { type: 'string', required: true }, confirm: { type: 'boolean', description: '切到前台要用户明确同意，传 true' },
+    }, execute: async ({ mode, confirm }) => {
+      if (!isDesktopMode(mode)) throw new Error(`mode 只能是 ${DESKTOP_MODES.join('、')}`);
+      if (mode === 'foreground' && confirm !== true) return '还没有切换：前台模式会接管用户的鼠标键盘，并请用户确认管理员权限。先问用户同不同意，同意了再带 confirm: true 调用。';
+      const why = await deps.setMode!(mode);
+      if (why) return mode === 'foreground' && deps.mode?.() === 'background' ? `前台模式没有打开，仍保持后台模式：${why}` : `没能切换：${why}`;
+      return mode === 'off' ? '已关闭桌面控制。' : mode === 'background' ? '已切换到后台模式：只向目标窗口投递输入，不动用户的鼠标、不抢焦点。' : '已切换到前台模式：整个屏幕，使用真实的鼠标和键盘。';
+    } }),
+  ];
   const mail: ToolSpec[] = !inbox ? [] : [
     defineTool({ name: 'inbox_read', description: '看信箱：任务栏上有程序在闪、或者来了系统通知时，这里汇总一句（每个程序一行）。只告诉你有动静，不替你打开；看不看、回不回你自己定。', parameters: {},
       execute: async () => inbox() ?? '信箱里没有新的动静。' }),
   ];
-  return [...page, ...procedures, ...desktop, ...mail];
+  return [...page, ...procedures, ...switching, ...desktop, ...mail];
 
   /** The modules the agent can use now; the desktop line follows its switch and mode. */
   function modules(): string {
     const desktop = deps.screen ? 'desktop（用户的电脑，前台模式：整个屏幕，真的鼠标键盘）' : deps.desktop ? 'desktop（用户的电脑，后台模式：一个窗口，不动用户的鼠标）' : '';
-    return `现在能用：page_*（专用浏览器）、${desktop ? `${desktop}、` : ''}procedure_*（学会的操作）${inbox ? '、inbox_read（信箱）' : ''}。`;
+    const switching = deps.setMode ? `desktop_mode（关闭、后台、前台之间切换，现在：${deps.mode?.() ?? 'off'}）` : '';
+    return `现在能用：page_*（专用浏览器）、${desktop ? `${desktop}、` : ''}${switching ? `${switching}、` : ''}procedure_*（学会的操作）${inbox ? '、inbox_read（信箱）' : ''}。`;
   }
   function health(): string {
     const faults = deps.health();

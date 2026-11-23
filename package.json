@@ -1,6 +1,6 @@
 {
   "name": "evolution-computer-use",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Self-evolving computer use for any agent: its own browser, the user's Windows desktop, and a library of learned procedures it replays and repairs. MCP server and JS library.",
   "license": "MIT",
   "mcpName": "io.github.chenkezhen480/evolution-computer-use",
@@ -31,7 +31,15 @@
     "NOTICE.md",
     "LICENSE"
   ],
-  "keywords": ["mcp", "computer-use", "agent", "browser", "cdp", "windows", "automation"],
+  "keywords": [
+    "mcp",
+    "computer-use",
+    "agent",
+    "browser",
+    "cdp",
+    "windows",
+    "automation"
+  ],
   "engines": {
     "node": ">=22.16.0"
   },

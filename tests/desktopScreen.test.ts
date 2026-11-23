@@ -100,7 +100,7 @@ test('the plugin turns foreground mode on only once the administrator helper is 
   assert.notEqual(computer.tools(), background);
   assert.match(description(), /^操作用户的电脑（前台模式）：用户把电脑交给了你/);
   const catalog = async () => (await computer.call('computer_use', {})).text;
-  assert.match(await catalog(), /^现在能用：page_\*（专用浏览器）、desktop（用户的电脑，前台模式：整个屏幕，真的鼠标键盘）、procedure_\*/);
+  assert.match(await catalog(), /^现在能用：page_\*（专用浏览器）、desktop（用户的电脑，前台模式：整个屏幕，真的鼠标键盘）、desktop_mode（[^）]*）、procedure_\*/);
   await computer.setForeground(false);
   assert.match(await catalog(), /desktop（用户的电脑，后台模式：一个窗口，不动用户的鼠标）/);
   await computer.setForeground(true);

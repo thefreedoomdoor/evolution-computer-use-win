@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createComputerUse } from './computer.ts';
+import type { DesktopMode } from './desktop/mode.ts';
 import { STOPPED } from './desktop/turns.ts';
 import { INSTRUCTIONS } from './instructions.ts';
 import { serveMcp } from './mcp/server.ts';
@@ -90,14 +91,15 @@ async function serve(options: Options): Promise<void> {
     },
   }, { input: process.stdin, output: process.stdout, log }, { name: 'evolution-computer-use', version: version(), instructions: INSTRUCTIONS });
 
-  if (options.desktop !== 'off') {
-    const why = computer.setDesktop(true);
-    if (why) log(why);
-    else if (existsSync(stopFile)) computer.halt();
-  }
-  if (options.desktop === 'foreground' && computer.desktopOn()) {
-    log('前台模式：正在请求管理员权限（Windows 会弹出确认）');
-    void computer.setForeground(true).then(why => { if (why) { computer.faults.set('foreground', `前台模式没有打开，用的是后台模式：${why}`); } else log('前台模式已打开'); });
+  const mode = options.desktop as DesktopMode;
+  if (mode !== 'off') {
+    if (mode === 'foreground') log('前台模式：正在请求管理员权限（Windows 会弹出确认）');
+    const stopped = existsSync(stopFile);
+    void computer.setDesktopMode(mode).then(why => {
+      if (why) { log(why); return; }
+      if (stopped) computer.halt();
+      else if (mode === 'foreground') log('前台模式已打开');
+    });
   }
   const end = () => { computer.stop(); process.exit(0); };
   process.once('SIGINT', end); process.once('SIGTERM', end);

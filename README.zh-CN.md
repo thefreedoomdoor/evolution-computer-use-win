@@ -18,7 +18,7 @@
 
 需要 Node.js 22.16 或更高。不用手动下载或 build：下面的配置都通过 `npx` 运行 [npm 上的包](https://www.npmjs.com/package/evolution-computer-use)，第一次用时自动下载。
 
-`--desktop` 默认是 `off`（只有专用浏览器），要让 Agent 操作你的电脑就写 `background` 或 `foreground`，见「用户的电脑」。
+`--desktop` 默认是 `off`（只有专用浏览器），要让 Agent 操作你的电脑就写 `background` 或 `foreground`，见「用户的电脑」。它只是启动时的初始状态：运行中 Agent 可以用 `desktop_mode` 工具在关闭、后台、前台之间切换，不用重启。
 
 Windows 上的 `npx` 是个批处理文件（`npx.cmd`），有的客户端不能直接启动它，所以下面的例子都用 `cmd /c` 包一层。macOS 和 Linux 上去掉 `cmd /c`，直接把 `npx` 当命令。
 
@@ -99,7 +99,7 @@ const computer = createComputerUse({
   name: '小助手',                          // 操作时屏幕顶上提示里的名字
   onToolsChanged: () => { /* 桌面控制开关变了，重新注册工具 */ },
 });
-computer.setDesktop(true);                 // 用户同意后再开
+computer.setDesktopMode('background');      // 用户同意后再开：off、background、foreground
 
 // 1. 把 INSTRUCTIONS 放进系统提示词；2. 把工具交给模型：
 const tools = computer.tools().map(({ name, description, inputSchema }) => ({ name, description, input_schema: inputSchema }));
@@ -107,7 +107,7 @@ const tools = computer.tools().map(({ name, description, inputSchema }) => ({ na
 const result = await computer.call(name, args, signal);   // { text, images?: [{ data: Buffer, mediaType, caption? }] }
 ```
 
-其他接口：`setForeground(on)`（前台模式，会弹 UAC）、`halt()` / `release()`（叫停与解除，宿主有自己的「停下」按钮时用）、`routines()`（跑例行操作）、`status()`、`show()`（把浏览器窗口提到前面）、`stop()`。`messages` 选项可以换成自己的 `MessageSink`，把操作读到的消息记进宿主自己的存储。
+其他接口：`setDesktopMode(mode)`（`off` / `background` / `foreground` 之间切换，前台会弹 UAC；被拒时留在后台并返回原因）、`setForeground(on)`（只切前台开关，会弹 UAC）、`halt()` / `release()`（叫停与解除，宿主有自己的「停下」按钮时用）、`routines()`（跑例行操作）、`status()`、`show()`（把浏览器窗口提到前面）、`stop()`。`messages` 选项可以换成自己的 `MessageSink`，把操作读到的消息记进宿主自己的存储。
 
 ## 命令行
 
@@ -151,10 +151,11 @@ evolution-computer-use status [选项]    列出学会的操作和有问题的�
 | `procedure_save` | 把走通的步骤存成操作；不带 `json` 调用时返回完整的格式说明 |
 | `procedure_note` | 写某一类的说明（对应的程序或网站、网址和别称、注意事项），最多 1000 字 |
 | `procedure_routines` | 把所有 `onAlarm` 的网页操作各跑一次，在单独的标签页里 |
+| `desktop_mode` | 在 `off`、`background`、`foreground` 之间切换桌面控制，不用重启；切前台要 `confirm: true`，会弹 UAC |
 | `desktop` | 操作用户的电脑（只在桌面控制开着时有），见下文 |
 | `inbox_read` | 看信箱（只在信箱开着时有） |
 
-工具列表固定，不随 Agent 学会新东西而变（保存操作不会让宿主的提示词缓存失效）；只有用户的开关会让 `desktop`、`inbox_read` 出现或消失，这时服务器发 `notifications/tools/list_changed`。返回都很短：页面读取按页截断，脚本结果截断，截图不会自动附带。
+工具列表固定，不随 Agent 学会新东西而变（保存操作不会让宿主的提示词缓存失效）；只有用户的开关会让 `desktop`、`inbox_read` 出现或消失，这时服务器发 `notifications/tools/list_changed`。`desktop_mode` 一直在，桌面控制关着也能用它打开。返回都很短：页面读取按页截断，脚本结果截断，截图不会自动附带。
 
 ## 自进化是怎么回事
 
@@ -222,6 +223,8 @@ dsh-world 在模拟站点上的对比实验：空结果算失败后，不报错�
 **后台模式**（`--desktop background`）：Agent 看某一个窗口的截图，输入直接投给那个窗口，不移动你的鼠标指针、不抢焦点，你用着电脑它也能用；被别的窗口挡住也照样截得到、点得到。`open` 先找开着的窗口；最小化的原地还原；没有窗口就去托盘点它的图标；托盘里也没有才从开始菜单启动，并把焦点还给你原来的窗口。程序已经在跑却既没窗口也没托盘图标时不再启动（微信 4.x 再启动会多开一个）。够不着以管理员权限运行的程序（很多游戏），遇到时 Agent 会被告知请你切到前台模式。
 
 **前台模式**（`--desktop foreground`）：启动时弹一次 Windows 的管理员权限确认，确认后起一个以管理员权限运行的助手，这次运行一直有效；拒绝或 2 分钟内没确认就留在后台模式，原因记为故障。Agent 看整个屏幕，用真的鼠标和键盘操作，游戏和管理员程序都能用；你的鼠标会跟着动，所以这是你把电脑交给它的时候用的。管理员助手只做截图、鼠标、键盘和画提示；列窗口、启动程序仍由普通权限的助手做，Agent 打开的程序不会以管理员身份运行。它和插件之间走一条只有这次知道名字的管道，先对一次性的口令。游戏的用户协议通常禁止自动化操作，长时间代打有封号风险，由你自己决定。
+
+**运行中切换**（`desktop_mode` 工具 / `setDesktopMode()`）：不用重启就能在 `off`、`background`、`foreground` 之间换。切到前台会弹 UAC 确认，Agent 调工具时必须带 `confirm: true`，没带就只返回一句提醒、不会弹窗；你拒绝了就留在后台，原因记进故障。切回后台会停掉管理员助手，切到 `off` 会把两个助手都停掉、`desktop` 工具消失。宿主想自己做个开关，直接调 `computer.setDesktopMode('background')` 这类方法即可，`onToolsChanged` 会通知你重新注册工具。
 
 `desktop` 的 `action`：
 

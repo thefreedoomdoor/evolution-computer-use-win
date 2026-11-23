@@ -25,7 +25,7 @@ No runtime dependencies: the browser side uses only Node's built-in `WebSocket` 
 
 Requires Node.js 22.16 or later. There is nothing to download or build by hand: the configurations below run the [npm package](https://www.npmjs.com/package/evolution-computer-use) through `npx`, which fetches it on first use.
 
-`--desktop` defaults to `off` (the agent's own browser only); to let the agent use your computer, pass `background` or `foreground`, as described in [The user's computer](#the-users-computer).
+`--desktop` defaults to `off` (the agent's own browser only); to let the agent use your computer, pass `background` or `foreground`, as described in [The user's computer](#the-users-computer). It is only the initial state: while running, the agent can switch between off, background and foreground with the `desktop_mode` tool, no restart needed.
 
 On Windows, `npx` is a batch file (`npx.cmd`) that some clients cannot start directly, so the examples start it through `cmd /c`. On macOS and Linux, drop `cmd /c` and make `npx` the command.
 
@@ -111,7 +111,7 @@ const computer = createComputerUse({
   name: 'Helper',                         // the name on the banner while it acts on the user's computer
   onToolsChanged: () => { /* desktop control was switched: register the tools again */ },
 });
-computer.setDesktop(true);                 // only once the user agreed
+computer.setDesktopMode('background');      // only once the user agreed: off, background or foreground
 
 // 1. Put INSTRUCTIONS in the system prompt. 2. Give the tools to the model:
 const tools = computer.tools().map(({ name, description, inputSchema }) => ({ name, description, input_schema: inputSchema }));
@@ -121,7 +121,8 @@ const result = await computer.call(name, args, signal);   // { text, images?: [{
 
 Other methods:
 
-- `setForeground(on)`: foreground mode; shows a UAC prompt.
+- `setDesktopMode(mode)`: switch between `off`, `background` and `foreground`; foreground shows a UAC prompt, and a refusal leaves you in background with the reason returned.
+- `setForeground(on)`: just the foreground switch; shows a UAC prompt.
 - `halt()` / `release()`: stop the agent and release it, for hosts with a stop button of their own.
 - `routines()`: run the routine procedures.
 - `status()`.
@@ -172,10 +173,11 @@ Faults and recoveries go to stderr (MCP clients usually keep it in their own log
 | `procedure_save` | Saves working steps as a procedure; without `json`, returns the full format description |
 | `procedure_note` | Writes a category's notes (which program or site, addresses and aliases, caveats), up to 1000 characters |
 | `procedure_routines` | Runs every `onAlarm` web procedure once, in a tab of its own |
+| `desktop_mode` | Switches desktop control between `off`, `background` and `foreground` at runtime; foreground needs `confirm: true` and shows a UAC prompt |
 | `desktop` | Acts on the user's computer (only while desktop control is on); see below |
 | `inbox_read` | Reads the inbox (only while the inbox is on) |
 
-The tool list is fixed: learning something new never changes it, so saving a procedure never invalidates the host's prompt cache. Only the user's switches make `desktop` and `inbox_read` appear or disappear; the server then sends `notifications/tools/list_changed`. Results are short: page reads are paged, script results cut, and screenshots never attached unasked.
+The tool list is fixed: learning something new never changes it, so saving a procedure never invalidates the host's prompt cache. Only the user's switches make `desktop` and `inbox_read` appear or disappear; the server then sends `notifications/tools/list_changed`. `desktop_mode` is always there, even while desktop control is off, so it can be used to turn it on. Results are short: page reads are paged, script results cut, and screenshots never attached unasked.
 
 ## How it evolves
 
@@ -297,6 +299,10 @@ Programs running as administrator (many games) are out of reach; the agent is to
   - Listing windows and starting programs stay with the ordinary helper, so nothing the agent opens runs as administrator.
   - It talks to the plugin over a pipe whose name only this session knows, after proving a one-time key.
 - **Games:** their terms usually forbid automation, and long unattended play risks a ban. That is your call.
+
+### Switching at runtime (`desktop_mode` / `setDesktopMode()`)
+
+No restart needed: switch between `off`, `background` and `foreground` while the plugin is running. Switching to foreground shows a UAC prompt; when the agent calls the tool it must pass `confirm: true`, otherwise it only gets a reminder and no prompt appears. If you decline, you stay in background and the reason is recorded as a fault. Switching back to background stops the elevated helper; switching to `off` stops both helpers and the `desktop` tool disappears. A host that wants its own switch can call `computer.setDesktopMode('background')`; `onToolsChanged` tells it to register the tools again.
 
 `desktop` actions:
 
