@@ -36,7 +36,7 @@
     "plugin",
     "src/desktop/win32.ps1",
     "README.md",
-    "README.zh-CN.md",
+    "README.en.md",
     "NOTICE.md",
     "LICENSE"
   ],
