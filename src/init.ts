@@ -114,8 +114,8 @@ export async function runInit(options: InitOptions): Promise<InitReport> {
   if (options.selftest !== false) {
     log(options.desktop ? '开始自测…' : '开始自测（桌面控制没打开，桌面项会跳过）…');
     // 自测用一次性浏览器 profile：主浏览器可能正被用户用着，而且 init 结束后不能留下一个看不见的窗口。
-    // 每次都先杀掉占用该 profile 的残留进程并清空目录，跑完再杀一次。测试注入 selftestRun 时不动真浏览器。
-    const profileDir = join(options.dataDir, 'selftest', 'browser');
+    // 目录按进程区分：两个 MCP 连接同时启动时，各自的 init 不能互相杀掉对方刚启动的浏览器。
+    const profileDir = join(options.dataDir, 'selftest', `browser-${process.pid}`);
     let temp: Browser | undefined;
     if (!options.selftestRun) {
       try { killBrowser(profileDir); } catch { /* 尽力而为 */ }
