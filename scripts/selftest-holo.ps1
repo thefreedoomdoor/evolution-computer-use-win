@@ -295,7 +295,7 @@ public class HoloDiagnostic : Form
 
         Glow(g, "EVOLUTION // COMPUTER-USE DIAGNOSTIC", fontTitle, new Point(26, 18), Color.FromArgb(120, 255, 246));
         using (SolidBrush sub = new SolidBrush(Color.FromArgb(90, 210, 255)))
-            g.DrawString("HOLO-INPUT ARRAY  ::  LIVE TELEMETRY  ::  BUILD 0.4.2", fontSmall, sub, 29, 56);
+            g.DrawString("HOLO-INPUT ARRAY  ::  LIVE TELEMETRY  ::  BUILD 0.4.3", fontSmall, sub, 29, 56);
         using (SolidBrush status = new SolidBrush(Color.FromArgb(120, 255, 190)))
             g.DrawString("UPLINK STABLE  /  EVENTS " + events.ToString("D4", CultureInfo.InvariantCulture) + "  /  " + (lifeSeconds - (int)(DateTime.Now - started).TotalSeconds) + "s", fontSmall, status, 610, 56);
 
