@@ -248,9 +248,10 @@ namespace DshTakeover {
     readonly EventWaitHandle available;
     readonly ManualResetEvent started = new ManualResetEvent(false);
     readonly Func<int,bool,bool,bool> handle;
+    readonly Action testStop;
     IntPtr hook; uint threadId; volatile bool disposed;
-    internal KeyboardWatch(string eventName, Func<int,bool,bool,bool> onKey) {
-      handle=onKey;callback=OnKey;
+    internal KeyboardWatch(string eventName, Func<int,bool,bool,bool> onKey, Action onTestStop=null) {
+      handle=onKey;testStop=onTestStop;callback=OnKey;
       available=new EventWaitHandle(false,EventResetMode.ManualReset,eventName+"-ready");
       new Thread(Run){IsBackground=true,Name="DSH stop keyboard"}.Start();
       if(!started.WaitOne(3000)||!Active)throw new InvalidOperationException("Could not start the stop keyboard listener");
@@ -266,7 +267,7 @@ namespace DshTakeover {
       Native.Msg message;Native.PeekMessage(out message,IntPtr.Zero,0,0,0);threadId=Native.GetCurrentThreadId();
       try{
         ReplaceHook();started.Set();
-        while(!disposed&&Native.GetMessage(out message,IntPtr.Zero,0,0)>0){if(message.message==0x8001)ReplaceHook();else if(message.message==0x8002)handle(0x1B,false,true);}
+        while(!disposed&&Native.GetMessage(out message,IntPtr.Zero,0,0)>0){if(message.message==0x8001)ReplaceHook();else if(message.message==0x8002){if(testStop!=null)testStop();}}
       }finally{available.Reset();if(hook!=IntPtr.Zero)Native.UnhookWindowsHookEx(hook);hook=IntPtr.Zero;}
     }
     IntPtr OnKey(int code,IntPtr message,IntPtr data){
@@ -376,6 +377,11 @@ namespace DshTakeover {
     readonly HashSet<int> physicalDown = new HashSet<int>(), swallowed = new HashSet<int>();
     string stopShortcut = "";
     int stopKey, stopModifiers;
+    // Pressing the stop gesture once only arms it; the second press inside this
+    // window stops the turn. Two separate presses are needed because a held key
+    // never leaves the swallowed set until it is released.
+    const long StopPressWindowMs = 600;
+    int stopPressKey = -1; long stopPressAt = -1;
     DateTime hideAt = DateTime.MaxValue;
     bool indicator = true, cursorIndicator = true, remoteVisible = true;
     int captureDepth;
@@ -391,7 +397,7 @@ namespace DshTakeover {
       string group=tests?(Environment.GetEnvironmentVariable("WCU_TEST_STOP_GROUP")??eventName+"-test-stop"):
         "Local\\DSH-WCU-AllStop-v1-"+WindowsIdentity.GetCurrent().User.Value;
       stopBus=new StopBus(group,()=>{if(armed&&!paused&&!shuttingDown)Stop("shared-stop",false);});
-      keyboard=new KeyboardWatch(eventName,HandleKey);
+      keyboard=new KeyboardWatch(eventName,HandleKey,TestStopForced);
       timer.Interval = 35;
       timer.Tick += delegate {
         // A window the user is moving or resizing goes once they are done.
@@ -694,9 +700,18 @@ namespace DshTakeover {
       if (!armed || paused) return false;
       if (vk != 0x1B && (stopKey == 0 || vk != stopKey || modifiers != stopModifiers)) return false;
       swallowed.Add(vk);
+      long now = composeClock.ElapsedMilliseconds;
+      // A single press is swallowed so it cannot reach the app being driven, and
+      // only a second press of the same key inside the window stops the turn.
+      if (stopPressKey != vk || stopPressAt < 0 || now - stopPressAt > StopPressWindowMs) {
+        stopPressKey = vk; stopPressAt = now; return true;
+      }
+      stopPressKey = -1; stopPressAt = -1;
       // Signal the worker first, before any rendering or pipe activity.
       cancel.Set(); Stop(vk == 0x1B ? "escape" : "shortcut"); return true;
     }}
+    // Test seam only: the real gesture needs two presses, this stops immediately.
+    void TestStopForced(){ lock(keyState){ if(!armed||paused) return; } cancel.Set(); Stop("escape"); }
     void Stop(string reason, bool broadcast=true) {
       cancel.Set();paused=true;armed=false;
       if(broadcast)stopBus.Publish();

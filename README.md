@@ -118,7 +118,7 @@ evolution-computer-use-win [serve|resume|routines|status] [options]
 | `--procedures <dir>` | `<data>/procedures` | Where learned procedures live; point several agents here to share them. |
 | `--profile <dir>` | `<data>/browser` | Browser profile, including its logins. |
 | `--desktop off\|background\|foreground` | `off` | Desktop control mode at startup. |
-| `--name <text>` | `AI` | Name shown on the overlay and on the stop capsule. |
+| `--name <text>` | `AI` | Companion name in the on-screen operation banner (`AI is operating`). The thought overlay never shows it. |
 | `--inbox-ignore <a,b>` | none | Program names never to report in the inbox. |
 | `--no-inbox` | off | Do not watch the taskbar or notifications. |
 | `--no-messages` | off | Do not write `messages.jsonl`. |
@@ -138,7 +138,7 @@ The data folder after a first run:
 ├─ desktop-mode.json         written by the DSH plugin, read every 0.8 s
 ├─ activity.json             overlay content, written by the DSH plugin
 ├─ activity-settings.json    overlay position, size, opacity, lock
-└─ overlay.lock              single-instance lock with the helper's PID
+└─ overlay.lock              single-instance lock held by the server process
 ```
 
 ## Tools
@@ -163,7 +163,7 @@ The data folder after a first run:
 | | `procedure_routines` | Runs every `onAlarm` web procedure once, each in its own tab. |
 | Inbox | `inbox_read` | Reports what is waiting: taskbar flashes and notifications. Only while the inbox is on. |
 
-The tool list is fixed. Learning something new never changes it, so saving a procedure cannot invalidate the host's prompt cache. Only the user's switches make `desktop` and `inbox_read` appear or disappear, and the server then sends `notifications/tools/list_changed`.
+The tool set is fixed once the server starts, with one exception: switching the desktop mode adds or removes the `desktop` tool, and the server then sends `notifications/tools/list_changed`. Whether `inbox_read` exists is decided at startup by `--no-inbox`. Learning a procedure never changes the list, so saving one cannot invalidate the host's prompt cache.
 
 ## Procedures
 
@@ -245,7 +245,7 @@ Background mode in detail:
 
 Foreground mode takes the real mouse and keyboard for the whole session and brings the program it works in to the front; that window stays in front afterwards. It is meant for programs that refuse anything else.
 
-**Stopping.** Press Esc twice quickly, or click the stop button on the overlay capsule. The `desktop-stopped` file then stays in the data folder, every desktop operation is refused, and nothing resumes until `evolution-computer-use-win resume` clears it. A stop during a running call takes effect at the next step.
+**Stopping.** Press Esc twice within 600 ms, or click the stop button on the overlay capsule. The `desktop-stopped` file then stays in the data folder, every desktop operation is refused, and nothing resumes until `evolution-computer-use-win resume` clears it. A stop during a running call takes effect at the next step.
 
 ## Thought overlay
 
@@ -279,12 +279,13 @@ When a procedure declares a `messages` mapping, every extracted row becomes one 
 | `<data>/browser/` | Browser profile, including the agent's logins. Never share, sync or commit it. |
 | `<data>/procedures/` | Learned procedures and category notes. |
 | `<data>/messages.jsonl` | Extracted messages. |
-| `<data>/desktop-mode.json` | Written by the DSH plugin, read by the server every 0.8 s. |
-| `<data>/activity.json` | What the overlay shows; written by the DSH plugin. |
-| `<data>/activity-settings.json` | Overlay position, size, opacity and lock; written and read by the DSH plugin. |
-| `<data>/overlay.lock` | The overlay helper's single-instance lock. |
+| `<data>/desktop-mode.json` | Written by the DSH plugin at the fixed path `~/.evolution-computer-use/desktop-mode.json`, so `--data` does not move it; the server reads it every 0.8 s. |
+| `<data>/activity.json` | What the overlay shows; the plugin writes it at that fixed path. Set `EVOCU_ACTIVITY_FILE` if the server must read another file. |
+| `<data>/activity-settings.json` | Overlay position, size, opacity and lock; written and read by the plugin at the fixed path. |
+| `<data>/overlay.lock` | Single-instance lock held by the server process; the file holds its PID. |
 | `<data>/desktop-stopped` | Present only while the emergency stop is engaged. |
-| Screenshots and recording frames | System temporary folder; deleted when the call ends. |
+| Screenshots | System temporary folder; deleted as soon as the model has read them. |
+| Recording frames | System temporary folder (`evolution-cu-record-*`); kept until the next recording starts or desktop control is turned off, because `review` still reads them. |
 
 ## Security and risks
 
@@ -298,7 +299,7 @@ When a procedure declares a `messages` mapping, every extracted row becomes one 
 
 - Share `--procedures` to let several agents learn into one library.
 - Give each concurrently running agent its own `--profile`; two browsers cannot share a profile at once.
-- Only one agent can drive the desktop at a time. The `desktop` tool takes the machine for the duration of a call.
+- The desktop has no cross-process lock, so run one agent against it at a time. Two agents' calls would interleave real mouse and keyboard input, and nothing in the system stops either of them.
 - **Coming from dsh-world:** copy `procedures/` and `browser/` (with the browser closed). `onAlarm` procedures move from the archive database to `procedure_routines` or a scheduled `evolution-computer-use-win routines`, and extracted messages land in `messages.jsonl` instead of `archive.sqlite`.
 
 ## Development
@@ -317,7 +318,7 @@ The test suite has 172 cases (170 pass, 2 skipped) and covers the MCP protocol, 
 Two experiments decided the procedure format; both report summary data, and the scripts were never committed:
 
 - **JSON plus in-page scripts won.** Pure JSON, JSON + scripts, and whole scripts all survived equally often (9 / 8 / 9 of 25 end-to-end), but JSON + scripts repaired best (20/20) and kept paging cheap. That form is what `procedure_save` writes. ([report](docs/experiments/2026-11-12-procedure-format.md))
-- **Silent failures, not crashes, were the costlier problem.** A broken selector that extracted nothing reported "done" 105 times across the first round. Treating an empty result as a named failure, with an explicit `allowEmpty` opt-out, took that to zero.
+- **Silent failures, not crashes, were the costlier problem.** In the first round the three formats reported "done" on a wrong replay 90, 110 and 90 times; in the second round's base branch, 105. Treating an empty result as a named failure, with an explicit `allowEmpty` opt-out, took the second-round count to zero.
 - **Repairs broke old pages.** About half of the repairs in the first round broke the previous page, because sites roll out redesigns gradually. Falling back to the two kept versions before anything outward ran cut that from 9 to 0 and raised end-to-end success from 9/25 to 16/25. ([report](docs/experiments/2026-11-13-procedure-algorithms.md))
 
 ## License and credits

@@ -120,7 +120,7 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 | `--procedures <目录>` | `<data>/procedures` | 操作库位置；多个 Agent 指向同一目录即可共享。 |
 | `--profile <目录>` | `<data>/browser` | 浏览器配置，含登录态。 |
 | `--desktop off\|background\|foreground` | `off` | 启动时的桌面控制模式。 |
-| `--name <文本>` | `AI` | 浮窗和停止胶囊上显示的名字。 |
+| `--name <文本>` | `AI` | 只在屏幕上的操作横幅里显示（「AI 正在操作」）；思考浮窗不显示这个名字。 |
 | `--inbox-ignore <名单>` | 无 | 不在信箱里提示的程序名。 |
 | `--no-inbox` | 关 | 不监视任务栏与通知。 |
 | `--no-messages` | 关 | 不写 `messages.jsonl`。 |
@@ -140,7 +140,7 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 ├─ desktop-mode.json         DSH 插件写入，每 0.8 秒读取一次
 ├─ activity.json             浮窗内容，由 DSH 插件写入
 ├─ activity-settings.json    浮窗的位置、大小、不透明度、锁定
-└─ overlay.lock              单实例锁，含助手进程的 PID
+└─ overlay.lock              单实例锁，由服务器进程持有
 ```
 
 ## 工具
@@ -165,7 +165,7 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 | | `procedure_routines` | 把每个 `onAlarm` 网页操作各跑一次，各用单独的标签页。 |
 | 信箱 | `inbox_read` | 报告有什么在等着：任务栏闪烁与系统通知。仅在信箱开启时可用。 |
 
-工具清单是固定的。学会新操作不会改变清单，因此存操作不会让宿主的 prompt cache 失效。只有用户的开关会让 `desktop` 和 `inbox_read` 出现或消失，此时服务会发 `notifications/tools/list_changed`。
+工具清单在服务启动后固定，只有一个例外：切换桌面模式会让 `desktop` 工具出现或消失，此时服务发 `notifications/tools/list_changed`。`inbox_read` 是否存在由启动时的 `--no-inbox` 决定。学会新操作不会改变清单，因此存操作不会让宿主的 prompt cache 失效。
 
 ## 操作
 
@@ -247,7 +247,7 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 
 前台模式在整个会话里接管真实鼠标键盘，并把它操作的程序带到最前，回合结束后那个窗口仍在最前；只适合不接受其它方式的程序。
 
-**停止。** 连按两下 Esc，或点浮窗胶囊上的停止按钮。之后数据目录里会留下 `desktop-stopped` 文件，所有桌面操作都被拒绝，直到执行 `evolution-computer-use-win resume` 才恢复。运行中的调用被叫停后，会在下一步生效。
+**停止。** 在 600 毫秒内连按两下 Esc，或点浮窗胶囊上的停止按钮。之后数据目录里会留下 `desktop-stopped` 文件，所有桌面操作都被拒绝，直到执行 `evolution-computer-use-win resume` 才恢复。运行中的调用被叫停后，会在下一步生效。
 
 ## 思考浮窗
 
@@ -281,12 +281,13 @@ Agent 在这台电脑上干活时，屏幕右上角会出现一块深色浮窗�
 | `<data>/browser/` | 浏览器配置，含 Agent 的登录态。不要共享、同步或提交。 |
 | `<data>/procedures/` | 学会的操作与分类说明。 |
 | `<data>/messages.jsonl` | 抽取出的消息。 |
-| `<data>/desktop-mode.json` | 由 DSH 插件写入，服务每 0.8 秒读一次。 |
-| `<data>/activity.json` | 浮窗显示的内容，由 DSH 插件写入。 |
-| `<data>/activity-settings.json` | 浮窗的位置、大小、不透明度与锁定，由 DSH 插件读写。 |
-| `<data>/overlay.lock` | 浮窗助手的单实例锁。 |
+| `<data>/desktop-mode.json` | DSH 插件固定写到 `~/.evolution-computer-use/desktop-mode.json`，`--data` 不会移动它；服务每 0.8 秒读一次。 |
+| `<data>/activity.json` | 浮窗显示的内容，插件写到同一个固定目录；要让服务读别处，设 `EVOCU_ACTIVITY_FILE`。 |
+| `<data>/activity-settings.json` | 浮窗的位置、大小、不透明度与锁定，由插件在固定目录里读写。 |
+| `<data>/overlay.lock` | 单实例锁，由服务器进程持有，文件里是它的 PID。 |
 | `<data>/desktop-stopped` | 仅在紧急停止生效时存在。 |
-| 截图与录制帧 | 系统临时目录，调用结束即删除。 |
+| 截图 | 系统临时目录，模型读过后立即删除。 |
+| 录制帧 | 系统临时目录（`evolution-cu-record-*`）；留到下次开始录制或关闭桌面控制时整目录删除，因为 `review` 还要读。 |
 
 ## 安全与风险
 
@@ -300,7 +301,7 @@ Agent 在这台电脑上干活时，屏幕右上角会出现一块深色浮窗�
 
 - 共享 `--procedures`，让多个 Agent 往同一个库里学。
 - 同时运行的 Agent 各用各的 `--profile`；两个浏览器不能共用同一份配置。
-- 同一时刻只能有一个 Agent 操作桌面。一次 `desktop` 调用期间，这台电脑归它。
+- 桌面本身没有跨进程锁，同一时刻只让一个 Agent 操作桌面。两个 Agent 的调用会把真实的鼠标键盘输入交错在一起，系统不会拦住任何一个。
 - **从 dsh-world 迁移：** 复制 `procedures/` 与 `browser/`（浏览器需先关闭）。`onAlarm` 操作从归档数据库改为 `procedure_routines` 或定时执行 `evolution-computer-use-win routines`；抽取到的消息写进 `messages.jsonl`，不再是 `archive.sqlite`。
 
 ## 开发
@@ -319,7 +320,7 @@ npm run build        # 输出到 lib/
 操作格式由两组实验定下来；两份报告都只给汇总数据，实验脚本从未提交：
 
 - **JSON + 页面脚本胜出。** 纯 JSON、JSON + 脚本、整段脚本三种形式在存活率上差不多（端到端成功 9 / 8 / 9，满分为 25），但 JSON + 脚本修补效果最好（20/20），分页任务也更省。现在 `procedure_save` 写的就是这种形式。（[报告](docs/experiments/2026-11-12-procedure-format.md)）
-- **真正的开销是静默失败，而不是崩溃。** 失效的选择器什么都没抽到、却报告「已完成」，第一轮里出现了 105 次。把空结果当成指名到步骤的失败、再用 `allowEmpty` 显式放行，这个数字降到 0。
+- **真正的开销是静默失败，而不是崩溃。** 第一轮里三种形式分别出现 90、110、90 次「报告已完成但重放结果不对」；第二轮 base 分支是 105 次。把空结果当成指名到步骤的失败、再用 `allowEmpty` 显式放行，第二轮的次数降到 0。
 - **修补会弄坏旧页面。** 第一轮里约一半的修补弄坏了上一个页面，因为网站是逐步灰度改版的。在任何 `outward` 步骤之前退回两个保留版本，把这类事故从 9 降到 0，端到端成功率从 9/25 提到 16/25。（[报告](docs/experiments/2026-11-13-procedure-algorithms.md)）
 
 ## 许可与致谢

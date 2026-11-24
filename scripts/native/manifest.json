@@ -20,8 +20,8 @@
                                   },
                     "takeover":  {
                                      "file":  "wcu-takeover-netfx.dll",
-                                     "sourceHash":  "77bedd3e62e8cbbd",
-                                     "sha256":  "6bcf835ab5b75709e7172bb9430075357c2ae9b67f3d2ba5b70f108dc2958a5d"
+                                     "sourceHash":  "dd63afdf68fde7e3",
+                                     "sha256":  "e9dcebed654b791957992600437bf75d2bf58ddd225c4f5167d52fad5d7f963e"
                                  }
                 }
 }
