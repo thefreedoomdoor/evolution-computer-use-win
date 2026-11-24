@@ -17,4 +17,5 @@
         overlayLocked: true
     - id: evolution-computer-use
       name: 'evolution-computer-use-win'
-      config: {}
+      config:
+        desktopMode: background
