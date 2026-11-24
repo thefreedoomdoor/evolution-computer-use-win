@@ -223,6 +223,25 @@ test('a refusal from the helper is said as one; what she did is kept without wha
   assert.doesNotMatch(JSON.stringify(s.desktop.recent()), /秘密/);
 });
 
+test('programs whose toolkit only takes real input are refused before a synthetic click, without switching to the command line', async () => {
+  const cases: [string, string][] = [
+    ['SunAwtFrame', 'Java/AWT/Swing'],
+    ['SunAwtDialog', 'Java/AWT/Swing'],
+    ['TkTopLevel', 'Tk'],
+    ['Chrome_WidgetWin_1', 'Chromium/Electron/Edge'],
+    ['WailsWebviewWindow', 'WebView2（Wails/Go 等）'],
+    ['Qt652QWindowIcon', 'Qt'],
+    ['GlassWndClass', 'JavaFX'],
+  ];
+  for (const [className, label] of cases) {
+    const s = setup(undefined, { class: () => ({ className }) });
+    await s.desktop.act({ action: 'open', app: '微信' });
+    await assert.rejects(s.desktop.act({ action: 'click', x: 10, y: 10 }), (error: Error) =>
+      error.message.includes(label) && error.message.includes('不处理后台模拟'));
+    assert.equal(s.ops().includes('click'), false, `${className}: the helper is never asked to post a click that cannot work`);
+  }
+});
+
 test('actions run one at a time, in order', async () => {
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });

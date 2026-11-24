@@ -48,12 +48,12 @@ export const DEFAULT_APPEARANCE = {
     x: null,
     y: null,
     colors: {
-      bg: '#EB0B0D12',
-      border: '#2A3140',
-      text: '#E6EAF2',
-      muted: '#8A93A3',
-      accent: '#4ADE80',
-      reason: '#C7B26B',
+      bg: '#99191D26',
+      border: '#75A1DA',
+      text: '#F6F7FA',
+      muted: '#B9C6D8',
+      accent: '#5B8DEF',
+      reason: '#B9C6D8',
       shot: '#5B8DEF',
     },
     fonts: {

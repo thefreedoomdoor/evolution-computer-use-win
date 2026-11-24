@@ -1256,12 +1256,12 @@ namespace DshTakeover {
     readonly List<string> thumbOrder=new List<string>();
     Font bodyFont,bodyBold,titleFont,timeFont;
     internal string FontDescription="Microsoft YaHei UI 13/12.5";
-    Color styleBackground=Color.FromArgb(235,11,13,18);
-    Color styleBorder=Color.FromArgb(255,42,49,64);
-    Color styleText=Color.FromArgb(255,230,234,242);
-    Color styleMuted=Color.FromArgb(255,138,147,163);
-    Color styleAccent=Color.FromArgb(255,74,222,128);
-    Color styleReason=Color.FromArgb(255,199,178,107);
+    Color styleBackground=Color.FromArgb(153,25,29,38);
+    Color styleBorder=Color.FromArgb(255,117,161,218);
+    Color styleText=Color.FromArgb(255,246,247,250);
+    Color styleMuted=Color.FromArgb(255,185,198,216);
+    Color styleAccent=Color.FromArgb(255,91,143,239);
+    Color styleReason=Color.FromArgb(255,185,198,216);
     Color styleShot=Color.FromArgb(255,91,143,239);
     string styleFontFamily="";
     float styleTitlePixels=13f,styleBodyPixels=12.5f;

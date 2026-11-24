@@ -270,6 +270,9 @@ export function createDesktop(deps: {
       if (!windows.some(entry => entry.hwnd === open.hwnd)) break;
       await pause(200);
     }
+    if ((await list()).windows.some(entry => entry.hwnd === open.hwnd)) {
+      throw new Error(`没能关闭 ${open.app} 的窗口：它还开着，可能这个窗口不接受关闭请求（例如模态对话框）。不要改用命令行；先点它的关闭按钮，或请用户手动关闭。`);
+    }
     window = undefined; view = undefined;
     return { text: `已关闭 ${open.app} 的窗口。` };
   }
@@ -355,6 +358,27 @@ export function createDesktop(deps: {
     },
   });
 
+  /**
+   * Some toolkits draw their own controls and read only the real Windows input queue, so PostMessage'd mouse/key messages
+   * are silently dropped: Java AWT/Swing, Tk, Chromium/Electron/Edge, WebView2 (Wails/Go) and Qt. The user has decided
+   * background mode must neither borrow the real pointer nor switch to the foreground on its own, so stop here and tell
+   * the agent to ask the user instead of trying a shell command to work around it.
+   */
+  const REAL_INPUT_ONLY: [RegExp, string][] = [
+    [/^(?:SunAwt|java)/i, 'Java/AWT/Swing'],
+    [/^Tk(?:TopLevel|Child)?$/i, 'Tk'],
+    [/^Chrome_WidgetWin_/i, 'Chromium/Electron/Edge'],
+    [/^WailsWebviewWindow$/i, 'WebView2（Wails/Go 等）'],
+    [/^Qt\d*QWindow/i, 'Qt'],
+    [/^GlassWndClass$/i, 'JavaFX'],
+  ];
+  async function refuseRealInputOnly(hwnd: number, what: string): Promise<void> {
+    const { className } = await call('class', { hwnd });
+    const hit = REAL_INPUT_ONLY.find(([pattern]) => pattern.test(String(className ?? '')));
+    if (hit) {
+      throw new Error(`这个程序（${hit[1]}）不处理后台模拟的${what}，后台模式动不了它。不要改用命令行，也不要自行切到前台；如果要操作它，请先征得用户同意，再把该应用策略设为“只能前台”或切到前台模式。`);
+    }
+  }
   const run: Record<string, (input: DesktopInput) => Promise<DesktopResult>> = {
     record: input => watch.record(input),
     stop: () => watch.stop(),
@@ -363,16 +387,19 @@ export function createDesktop(deps: {
     shot: () => shot(),
     click: async input => {
       const at = onWindow(input.x, input.y);
+      await refuseRealInputOnly(current().hwnd, '点击');
       await call('click', { hwnd: current().hwnd, ...at, right: input.right === true, count: input.double ? 2 : 1, hold: holdMs(input.hold) });
       return after(pressed('点击', input.hold), at);
     },
     drag: async input => {
       const from = onWindow(input.x, input.y), to = onWindow(input.x2, input.y2);
+      await refuseRealInputOnly(current().hwnd, '拖动');
       await call('drag', { hwnd: current().hwnd, x: from.x, y: from.y, x2: to.x, y2: to.y, right: input.right === true, hold: holdMs(input.hold) });
       return after(dragged(input.hold), to);
     },
     move: async input => {
       const at = onWindow(input.x, input.y);
+      await refuseRealInputOnly(current().hwnd, '移动鼠标');
       await call('move', { hwnd: current().hwnd, ...at });
       return after('已把鼠标移过去，没有点击。', at);
     },
@@ -380,12 +407,14 @@ export function createDesktop(deps: {
     type: async input => {
       if (typeof input.text !== 'string' || !input.text) throw new Error('text 不能是空的');
       const at = input.x !== undefined || input.y !== undefined ? onWindow(input.x, input.y) : undefined;
+      await refuseRealInputOnly(current().hwnd, '键盘输入');
       if (at) await call('click', { hwnd: current().hwnd, ...at, right: false, count: 1 });
       await call('type', { hwnd: current().hwnd, text: input.text, delay: input.stream === true ? 45 : 0 });
       if (input.submit) await call('key', { hwnd: current().hwnd, vk: VK.return, modifiers: [] });
       return after(input.submit ? '已输入并回车。' : '已输入。', at);
     },
     press: async input => {
+      await refuseRealInputOnly(current().hwnd, '按键');
       await call('key', { hwnd: current().hwnd, ...desktopKey(String(input.key ?? '')), hold: holdMs(input.hold) });
       return after(pressed(`按 ${input.key}`, input.hold));
     },

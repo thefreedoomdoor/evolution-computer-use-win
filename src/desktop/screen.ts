@@ -83,10 +83,13 @@ export function createScreen(deps: {
   async function closeWindow(): Promise<DesktopResult> {
     if (frontHwnd === undefined) throw new Error('还没有在最前面的窗口：先 desktop open 它');
     const closing = frontHwnd;
-    await hands('close', { hwnd: closing });
+    await hands('rclose', {});
     for (const deadline = Date.now() + 4000; Date.now() < deadline;) {
       if (!(await windows()).some(entry => entry.hwnd === closing)) break;
       await pause(200);
+    }
+    if ((await windows()).some(entry => entry.hwnd === closing)) {
+      throw new Error('没能关闭最前面的窗口：它还开着，可能这个窗口不接受关闭请求（例如模态对话框）。不要改用命令行；先点它的关闭按钮，或请用户手动关闭。');
     }
     front = undefined; frontInfo = undefined; frontHwnd = undefined; view = undefined;
     return { text: '已关闭最前面的窗口。' };

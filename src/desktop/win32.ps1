@@ -60,6 +60,7 @@ public static class Desk {
   [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int command);
   [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, System.Text.StringBuilder s, int n);
   [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
   [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
   [DllImport("user32.dll")] static extern uint SendInput(uint count, INPUT[] inputs, int size);
@@ -449,6 +450,8 @@ public static class Desk {
   }
 
   public static long[] Cursor() { POINT p; GetCursorPos(out p); return new long[] { p.X, p.Y }; }
+  /** The window class name, for telling programs that ignore posted mouse messages (Java AWT) from normal Win32 windows. */
+  public static string ClassName(long hwnd) { var s = new System.Text.StringBuilder(256); GetClassNameW(new IntPtr(hwnd), s, 256); return s.ToString(); }
 
   static AutomationElement Child(AutomationElement under, string className) {
     return under == null ? null : under.FindFirst(TreeScope.Children, new PropertyCondition(AutomationElement.ClassNameProperty, className));
@@ -1275,6 +1278,7 @@ function Run($op, $a) {
     'scroll' { UseCursor([long]$a.hwnd); [Desk]::Scroll([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
     'move' { UseCursor([long]$a.hwnd); [Desk]::Move([long]$a.hwnd, [int]$a.x, [int]$a.y); return @{} }
     'close' { [Desk]::Close([long]$a.hwnd); return @{} }
+    'class' { return @{ className = [Desk]::ClassName([long]$a.hwnd) } }
     'openfile' { Start-Process -FilePath ([string]$a.file); return @{} }
     'type' { [Desk]::Type([long]$a.hwnd, [string]$a.text, [int]$a.delay); return @{} }
     'key' { [Desk]::Key([long]$a.hwnd, [int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return @{} }
