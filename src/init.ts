@@ -19,6 +19,8 @@ export interface InitOptions {
   allowNetwork?: boolean;
   /** init = 用户主动初始化；startup = 每次 DSH 启动的增量检查；none = 只返回结果不写报告。 */
   report?: 'init' | 'startup' | 'none';
+  /** startup 时同时写一份 init-report：第一次启动用它标记初始化已完成。 */
+  alsoInitReport?: boolean;
   log?: (line: string) => void;
   /** 仅供测试注入：默认就是 scanApps / runSelftest。 */
   scan?: (options: { dataDir: string; full?: boolean; log?: (line: string) => void }) => Promise<import('./apps/index.ts').AppIndex>;
@@ -155,6 +157,10 @@ export async function runInit(options: InitOptions): Promise<InitReport> {
     const md = join(options.dataDir, name.replace(/\.json$/, '.md'));
     writeFileSync(md, markdown(report), { encoding: 'utf8', mode: 0o600 });
     report.reportMarkdown = md;
+    if (options.report === 'startup' && options.alsoInitReport) {
+      writeReport(options.dataDir, report, INIT_REPORT);
+      writeFileSync(join(options.dataDir, INIT_REPORT.replace(/\.json$/, '.md')), markdown(report), { encoding: 'utf8', mode: 0o600 });
+    }
   }
   return report;
 }

@@ -77,6 +77,14 @@ test('startup 报告写到 startup-report.json，不动 init-report.json', async
   assert.equal(hasInitReport(dataDir), false);
 });
 
+test('第一次启动检查同时写 init-report，后续启动不再算第一次', async t => {
+  const dataDir = temp(); t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  await runInit({ dataDir, browser: {} as never, report: 'startup', alsoInitReport: true, scan: async () => index(2, 'full'), selftestRun: async () => passingSelftest });
+  assert.equal(existsSync(join(dataDir, STARTUP_REPORT)), true);
+  assert.equal(existsSync(join(dataDir, INIT_REPORT)), true);
+  assert.equal(hasInitReport(dataDir), true);
+});
+
 test('report=none 不写文件，但结果照常返回', async t => {
   const dataDir = temp(); t.after(() => rmSync(dataDir, { recursive: true, force: true }));
   const report = await runInit({ dataDir, browser: {} as never, report: 'none', scan: async () => index(3), selftestRun: async () => passingSelftest });

@@ -303,7 +303,7 @@ export function createComputerUse(options: ComputerUseOptions) {
     try {
       return await runInit({
         dataDir: options.dataDir, browser, ...(desktopUse ? { desktop: desktopUse.desktop } : {}),
-        full: first, selftest: first, allowNetwork: false, report: 'startup', log: options.log,
+        full: first, selftest: first, allowNetwork: false, report: 'startup', alsoInitReport: first, log: options.log,
       });
     } catch (error) {
       options.log?.(`启动检查失败：${errorText(error)}`);
