@@ -18,6 +18,7 @@ const HELP = `evolution-computer-use-win：会自己进化的电脑操作插件�
   evolution-computer-use-win resume [选项]    用户按了「停下」之后，解除停下
   evolution-computer-use-win routines [选项]  跑一遍例行操作（onAlarm），打印结果，给定时任务用
   evolution-computer-use-win status [选项]    列出学会的操作
+  evolution-computer-use-win init [选项]      扫描软件位置、自测电脑操作，写一份报告
 
 选项：
   --data <目录>         数据目录，默认 ~/.evolution-computer-use
@@ -29,10 +30,13 @@ const HELP = `evolution-computer-use-win：会自己进化的电脑操作插件�
   --no-inbox            桌面控制开着时也不看任务栏
   --no-messages         操作读到的消息不记进 <数据目录>/messages.jsonl
   --no-overlay          不启动右上角的思考/步骤浮窗（默认开，随 DSH 插件设置）
+  --skip-selftest       init 时只扫描，不跑自测
+  --network             init 自测允许访问外网（默认只用本地测试页）
+  --json                init 结果以 JSON 打印
   -h, --help            显示这段说明`;
 
 const STOP_FILE = 'desktop-stopped';
-type Options = { data: string; procedures?: string; profile?: string; desktop: string; name?: string; inbox: boolean; ignore: string[]; messages: boolean; overlay: boolean };
+type Options = { data: string; procedures?: string; profile?: string; desktop: string; name?: string; inbox: boolean; ignore: string[]; messages: boolean; overlay: boolean; selftest: boolean; network: boolean; json: boolean };
 
 function parse(argv: string[]): { command: string; options: Options } {
   const { values, positionals } = parseArgs({
@@ -40,12 +44,13 @@ function parse(argv: string[]): { command: string; options: Options } {
     options: {
       data: { type: 'string' }, procedures: { type: 'string' }, profile: { type: 'string' }, desktop: { type: 'string' }, name: { type: 'string' },
       'inbox-ignore': { type: 'string' }, 'no-inbox': { type: 'boolean' }, 'no-messages': { type: 'boolean' },
-      'no-overlay': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      'no-overlay': { type: 'boolean' }, 'skip-selftest': { type: 'boolean' },
+      network: { type: 'boolean' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
   });
   if (values.help) { process.stdout.write(`${HELP}\n`); process.exit(0); }
   const command = positionals[0] ?? 'serve';
-  if (!['serve', 'resume', 'routines', 'status'].includes(command) || positionals.length > 1) throw new Error(`不认识的命令：${positionals.join(' ')}`);
+  if (!['serve', 'resume', 'routines', 'status', 'init'].includes(command) || positionals.length > 1) throw new Error(`不认识的命令：${positionals.join(' ')}`);
   const desktop = values.desktop ?? 'off';
   if (!['off', 'background', 'foreground'].includes(desktop)) throw new Error('--desktop 只能是 off、background 或 foreground');
   return {
@@ -55,6 +60,7 @@ function parse(argv: string[]): { command: string; options: Options } {
       ...(values.procedures ? { procedures: resolve(values.procedures) } : {}), ...(values.profile ? { profile: resolve(values.profile) } : {}),
       desktop, ...(values.name ? { name: values.name } : {}), inbox: !values['no-inbox'], messages: !values['no-messages'],
       overlay: !values['no-overlay'],
+      selftest: !values['skip-selftest'], network: Boolean(values.network), json: Boolean(values.json),
       ignore: (values['inbox-ignore'] ?? '').split(/[,，]/).map(name => name.trim()).filter(Boolean),
     },
   };
@@ -105,6 +111,14 @@ async function serve(options: Options): Promise<void> {
       else if (mode === 'foreground') log('前台模式已打开');
     });
   }
+  // 每次 DSH 启动都做一次增量扫描；第一次（还没有 init 报告）顺带完整扫描和自测。
+  // EVOLUTION_CU_NO_AUTO_INIT=1 可以关掉，排查问题时有用。
+  if (process.env.EVOLUTION_CU_NO_AUTO_INIT !== '1') {
+    void computer.autoInit().then(report => {
+      if (!report) return;
+      log(`启动检查：${report.scan.apps} 个程序${report.selftest ? `，自测${report.selftest.ok ? '通过' : '有失败项'}` : ''}`);
+    }).catch(error => log(`启动检查失败：${errorText(error)}`));
+  }
   // 用户在 DSH 设置界面里选的前台/后台模式写在这个共享文件里，这里轮询让它即时生效，不用重启。
   const modeFile = join(homedir(), '.evolution-computer-use', 'desktop-mode.json');
   const modeTimer = setInterval(() => {
@@ -131,6 +145,18 @@ async function serve(options: Options): Promise<void> {
 async function main(): Promise<void> {
   const { command, options } = parse(process.argv.slice(2));
   if (command === 'serve') return serve(options);
+  if (command === 'init') {
+    const computer = open(options);
+    let code = 0;
+    try {
+      const report = await computer.init({ full: true, selftest: options.selftest, allowNetwork: options.network });
+      if (options.json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      else process.stdout.write(readFileSync(report.reportMarkdown ?? report.reportJson!, 'utf8'));
+      if (!report.ok) code = 1;
+    } finally { computer.stop(); }
+    // 桌面控制会起一个助手进程，stop 之后事件循环里还留着句柄；init 是一次性命令，直接退出。
+    process.exit(code);
+  }
   if (command === 'resume') {
     const file = join(options.data, STOP_FILE);
     if (!existsSync(file)) { process.stdout.write('现在没有停下，不用解除。\n'); return; }

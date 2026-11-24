@@ -240,6 +240,24 @@ public static class Desk {
     // A long press is one press, held: the button stays down until the time is up.
     if (hold > 0) { PostMessage(target, down, button, at); Thread.Sleep(hold); PostMessage(target, up, IntPtr.Zero, at); return; }
     for (int i = 0; i < count; i++) { PostMessage(target, i == 1 ? twice : down, button, at); PostMessage(target, up, IntPtr.Zero, at); }
+    // The target handles the messages a moment later; give it that moment before the next step reads the window.
+    Thread.Sleep(40);
+  }
+
+  /** Moves the pointer with no button pressed: a program sees the pointer over it, and nothing is clicked. */
+  public static void Move(long hwnd, int x, int y) {
+    Aware();
+    var point = new POINT { X = x, Y = y };
+    var target = Under(Live(hwnd), ref point);
+    PostMessage(target, 0x200, IntPtr.Zero, Pack(point.X, point.Y));
+    Thread.Sleep(30);
+  }
+
+  /** Asks the window to close the way its own X button does, so the program can still ask about unsaved work. */
+  public static void Close(long hwnd) {
+    var target = Live(hwnd);
+    PostMessage(target, 0x10, IntPtr.Zero, IntPtr.Zero);
+    Thread.Sleep(120);
   }
 
   /** Steps a drag takes between its two ends: enough that programs see the pointer travel, not jump. */
@@ -283,10 +301,14 @@ public static class Desk {
     return GetGUIThreadInfo(thread, ref info) && info.hwndFocus != IntPtr.Zero ? info.hwndFocus : top;
   }
 
-  public static void Type(long hwnd, string text) {
+  public static void Type(long hwnd, string text) { Type(hwnd, text, 45); }
+  /** delay > 0 streams the characters one at a time; 0 posts them all at once. */
+  public static void Type(long hwnd, string text, int delay) {
     uint thread;
     var to = Focused(Live(hwnd), out thread);
-    foreach (char c in text) PostMessage(to, 0x102, new IntPtr(c), new IntPtr(1));
+    foreach (char c in text) { PostMessage(to, 0x102, new IntPtr(c), new IntPtr(1)); if (delay > 0) Thread.Sleep(delay); }
+    // Characters are posted, not typed; let the control take them before a click reads its text.
+    Thread.Sleep(60);
   }
 
   static int Left(int modifier) { return modifier == 0x11 ? 0xA2 : modifier == 0x10 ? 0xA0 : 0xA4; }
@@ -382,11 +404,14 @@ public static class Desk {
     MouseButton(right ? 0x0010u : 0x0004u);
   }
   /** Types as characters, not keys, so any language goes in as written; a line break is the Enter key. */
-  public static void RealType(string text) {
+  public static void RealMove(int x, int y) { Aware(); MouseAt(x, y); Thread.Sleep(30); }
+  public static void RealClose() { RealKey(0x73, new int[] { 0x12 }, 60); Thread.Sleep(120); }
+  public static void RealType(string text) { RealType(text, 8); }
+  public static void RealType(string text, int delay) {
     foreach (var ch in text) {
       if (ch == '\r') continue;
       if (ch == '\n') { RealKey(0x0D, new int[0], 0); continue; }
-      KeyEvent(0, ch, 0x0004); KeyEvent(0, ch, 0x0004 | 0x0002); Thread.Sleep(8);
+      KeyEvent(0, ch, 0x0004); KeyEvent(0, ch, 0x0004 | 0x0002); if (delay > 0) Thread.Sleep(delay);
     }
   }
   /** A key with its scan code too: games read the keyboard by scan code. */
@@ -500,17 +525,29 @@ function Notifications {
 # listener, so a machine where it cannot be drawn still has every other operation. Its words come from the caller:
 # this file has no byte-order mark, and Windows PowerShell would misread any that were written here.
 $signLoaded = $false
+# What the banner last drew, for the automatic checks. Loading the type without showing it draws nothing.
+function SignStatus {
+  if (-not $script:signLoaded) { Sign @{ show = $false } | Out-Null }
+  return [Sign]::Status()
+}
 function Sign($a) {
   if (-not $script:signLoaded) {
-    Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+    # System.Web.Extensions carries JavaScriptSerializer, which reads the banner style the server sends.
+    $signRefs = @('System.Windows.Forms', 'System.Drawing')
+    try { Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop; $signRefs += [System.Web.Script.Serialization.JavaScriptSerializer].Assembly.Location } catch { $signRefs += 'System.Web.Extensions' }
+    Add-Type -ReferencedAssemblies $signRefs -TypeDefinition @'
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 public static class Sign {
@@ -545,6 +582,8 @@ public static class Sign {
    */
   class Layer : Form {
     public bool Through;
+    /** Whole-window alpha (0-255), applied by Put: this is what the banner's opacity becomes. */
+    public byte Alpha = 255;
     protected override bool ShowWithoutActivation { get { return true; } }
     protected override CreateParams CreateParams {
       get { var p = base.CreateParams; p.ExStyle |= 0x80000 | 0x08000000 | 0x80 | (Through ? 0x20 : 0); return p; }
@@ -556,7 +595,7 @@ public static class Sign {
       try {
         var size = new SIZE { W = picture.Width, H = picture.Height };
         var source = new POINT(); var where = new POINT { X = at.X, Y = at.Y };
-        var blend = new BLEND { Op = 0, Flags = 0, Alpha = 255, Format = 1 };
+        var blend = new BLEND { Op = 0, Flags = 0, Alpha = this.Alpha, Format = 1 };
         UpdateLayeredWindow(Handle, screen, ref where, ref size, memory, ref source, 0, ref blend, 2);
       } finally { SelectObject(memory, old); DeleteObject(bits); DeleteDC(memory); ReleaseDC(IntPtr.Zero, screen); }
     }
@@ -569,16 +608,259 @@ public static class Sign {
   static Layer capsule, glow;
   static System.Windows.Forms.Timer follow, fade, breathe;
   static HookProc hook;
-  static Font strong, quiet;
   static IntPtr target = IntPtr.Zero;
   static bool active;
   static string name = "", hint = "", stopText = "", stoppedText = "";
   /** Where the button is on the capsule, for the click; empty once the agent has been stopped. */
   static Rectangle button = Rectangle.Empty;
+  /** Where the capsule last landed, for the status report. */
+  static Rectangle placed = Rectangle.Empty;
+  /** Where its body (the capsule without the shadow) landed. */
+  static Rectangle placedBody = Rectangle.Empty;
   static Rectangle glowAt = Rectangle.Empty;
   static long lastEscape;
   static double scale = 1, phase;
   static int S(double v) { return (int)Math.Round(v * scale); }
+  /** Like S, but follows the capsule's height too: 38 is the size this sign has always had. */
+  static int H(double v) { return (int)Math.Round(v * scale * (styleHeight / 38.0)); }
+
+  // The banner contract (docs/design/appearance.md) arrives as the style object of the sign command. Every
+  // field below is optional; the defaults are exactly the capsule this helper drew before styles existed.
+  const int BaseHeight = 38;
+  static PrivateFontCollection uploadedFonts;
+  static FontFamily[] uploadedFamilies, installedFamilies;
+  static int styleHeight = BaseHeight, styleWidth, styleOpacity = 100;
+  static string stylePosition = "top-center", styleAlign = "center";
+  static int styleOffsetX, styleOffsetY = 6, styleGap = 10, stylePadding = 16;
+  static int? styleX, styleY;
+  static Color styleBg = Color.FromArgb(236, 24, 26, 32);
+  static Color styleText = Color.FromArgb(245, 247, 250);
+  static Color styleHint = Color.FromArgb(150, 156, 168);
+  static Color styleDot = Color.FromArgb(64, 140, 255);
+  static Color styleStopBg = Color.FromArgb(34, 255, 255, 255);
+  static Color styleStopText = Color.FromArgb(240, 242, 246);
+  static Color styleBorder = Color.FromArgb(40, 255, 255, 255);
+  static string mainFam = "Microsoft YaHei UI", hintFam = "Microsoft YaHei UI", stopFam = "Microsoft YaHei UI";
+  static float mainPx = 14, hintPx = 12.5f, stopPx = 12.5f;
+  static bool mainBold = true, hintBold, stopBold;
+  static string mainUsed = "Microsoft YaHei UI", hintUsed = "Microsoft YaHei UI", stopUsed = "Microsoft YaHei UI";
+  static Font mainFont, hintFont, stopFont;
+  static bool styleApplied, captureExcluded;
+
+  /** Restores the look the capsule had before styles existed. */
+  static void DefaultStyle() {
+    styleHeight = BaseHeight; styleWidth = 0; styleOpacity = 100;
+    stylePosition = "top-center"; styleAlign = "center";
+    styleOffsetX = 0; styleOffsetY = 6; styleGap = 10; stylePadding = 16;
+    styleX = null; styleY = null;
+    styleBg = Color.FromArgb(236, 24, 26, 32); styleText = Color.FromArgb(245, 247, 250);
+    styleHint = Color.FromArgb(150, 156, 168); styleDot = Color.FromArgb(64, 140, 255);
+    styleStopBg = Color.FromArgb(34, 255, 255, 255); styleStopText = Color.FromArgb(240, 242, 246);
+    styleBorder = Color.FromArgb(40, 255, 255, 255);
+    mainFam = "Microsoft YaHei UI"; hintFam = "Microsoft YaHei UI"; stopFam = "Microsoft YaHei UI";
+    mainPx = 14; hintPx = 12.5f; stopPx = 12.5f;
+    mainBold = true; hintBold = false; stopBold = false;
+    styleApplied = false;
+  }
+
+  /** Reads the banner style JSON; a field that is missing, of the wrong type or out of range keeps the default. */
+  static void ApplyStyle(string json) {
+    DefaultStyle();
+    if (!string.IsNullOrEmpty(json)) {
+      Dictionary<string, object> root = null;
+      try { root = new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>; } catch { root = null; }
+      if (root != null) {
+        styleApplied = true;
+        styleHeight = Int(Get(root, "height"), 38, 28, 120);
+        styleWidth = Int(Get(root, "width"), 0, 0, 6000);
+        styleOpacity = Int(Get(root, "opacity"), 100, 20, 100);
+        stylePosition = Position(Get(root, "position"));
+        styleX = NullInt(Get(root, "x")); styleY = NullInt(Get(root, "y"));
+        Dictionary<string, object> colors = Obj(Get(root, "colors"));
+        if (colors != null) {
+          styleBg = ColorOf(Get(colors, "bg"), styleBg);
+          styleText = ColorOf(Get(colors, "text"), styleText);
+          styleHint = ColorOf(Get(colors, "hint"), styleHint);
+          styleDot = ColorOf(Get(colors, "dot"), styleDot);
+          styleStopBg = ColorOf(Get(colors, "stopBg"), styleStopBg);
+          styleStopText = ColorOf(Get(colors, "stopText"), styleStopText);
+          styleBorder = ColorOf(Get(colors, "border"), styleBorder);
+        }
+        Dictionary<string, object> fonts = Obj(Get(root, "fonts"));
+        if (fonts != null) { StyleFont(Obj(Get(fonts, "main")), 0); StyleFont(Obj(Get(fonts, "hint")), 1); StyleFont(Obj(Get(fonts, "stop")), 2); }
+        Dictionary<string, object> layout = Obj(Get(root, "layout"));
+        if (layout != null) {
+          styleAlign = Align(Get(layout, "align"));
+          styleOffsetX = Int(Get(layout, "offsetX"), 0, -6000, 6000);
+          styleOffsetY = Int(Get(layout, "offsetY"), 6, -6000, 6000);
+          styleGap = Int(Get(layout, "gap"), 10, 0, 60);
+          stylePadding = Int(Get(layout, "padding"), 16, 0, 80);
+        }
+      }
+    }
+    BuildFonts();
+  }
+
+  /** One entry of the style's fonts object; 0 is the main line, 1 the hint, 2 the stop button. */
+  static void StyleFont(Dictionary<string, object> spec, int slot) {
+    if (spec == null) return;
+    string family = Str(Get(spec, "family"));
+    bool bold = Bool(Get(spec, "bold"), slot == 0);
+    float size = Num(Get(spec, "size"), slot == 0 ? 14 : 12.5f, 1, 200);
+    if (slot == 0) { if (family != null) mainFam = family; mainPx = size; mainBold = bold; }
+    else if (slot == 1) { if (family != null) hintFam = family; hintPx = size; hintBold = bold; }
+    else { if (family != null) stopFam = family; stopPx = size; stopBold = bold; }
+  }
+
+  static void BuildFonts() {
+    if (mainFont != null) { try { mainFont.Dispose(); } catch { } }
+    if (hintFont != null) { try { hintFont.Dispose(); } catch { } }
+    if (stopFont != null) { try { stopFont.Dispose(); } catch { } }
+    mainFont = MakeFont(mainFam, mainPx, mainBold, out mainUsed);
+    hintFont = MakeFont(hintFam, hintPx, hintBold, out hintUsed);
+    stopFont = MakeFont(stopFam, stopPx, stopBold, out stopUsed);
+  }
+
+  /** A font at the style's 96-DPI size, scaled for this display; an unknown family falls back to YaHei UI, then Segoe UI. */
+  static Font MakeFont(string family, float px, bool bold, out string used) {
+    FontFamily face = Face(family);
+    used = face == null ? "Segoe UI" : face.Name;
+    float size = (float)Math.Max(1.0, px * scale);
+    FontStyle style = bold ? FontStyle.Bold : FontStyle.Regular;
+    try { return new Font(face, size, style, GraphicsUnit.Pixel); }
+    catch { used = "Segoe UI"; return new Font("Segoe UI", size, style, GraphicsUnit.Pixel); }
+  }
+
+  static FontFamily Face(string family) {
+    string wanted = (family == null ? "" : family).Trim();
+    FontFamily[] custom = Uploaded();
+    FontFamily[] installed = Installed();
+    if (wanted.Length > 0) {
+      for (int i = 0; i < custom.Length; i++) if (Same(custom[i].Name, wanted)) return custom[i];
+      for (int i = 0; i < installed.Length; i++) if (Same(installed[i].Name, wanted)) return installed[i];
+    }
+    for (int i = 0; i < installed.Length; i++) if (Same(installed[i].Name, "Microsoft YaHei UI")) return installed[i];
+    for (int i = 0; i < installed.Length; i++) if (Same(installed[i].Name, "Segoe UI")) return installed[i];
+    return FontFamily.GenericSansSerif;
+  }
+
+  /** Fonts the plugin copied to ~/.evolution-computer-use/fonts; read once, a broken file is skipped. */
+  static FontFamily[] Uploaded() {
+    if (uploadedFamilies != null) return uploadedFamilies;
+    var families = new List<FontFamily>();
+    try {
+      string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".evolution-computer-use", "fonts");
+      if (Directory.Exists(dir)) {
+        var files = new List<string>();
+        files.AddRange(Directory.GetFiles(dir, "*.ttf"));
+        files.AddRange(Directory.GetFiles(dir, "*.otf"));
+        files.Sort(StringComparer.OrdinalIgnoreCase);
+        if (files.Count > 0) {
+          uploadedFonts = new PrivateFontCollection();
+          for (int i = 0; i < files.Count; i++) { try { uploadedFonts.AddFontFile(files[i]); } catch { } }
+          if (uploadedFonts.Families.Length > 0) families.AddRange(uploadedFonts.Families);
+        }
+      }
+    } catch { }
+    uploadedFamilies = families.ToArray();
+    return uploadedFamilies;
+  }
+
+  static FontFamily[] Installed() {
+    if (installedFamilies == null) {
+      try { installedFamilies = FontFamily.Families; } catch { installedFamilies = new FontFamily[0]; }
+    }
+    return installedFamilies;
+  }
+
+  static bool Same(string a, string b) { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
+
+  static Dictionary<string, object> Obj(object v) { return v as Dictionary<string, object>; }
+  static object Get(Dictionary<string, object> d, string key) { object v = null; if (d != null) d.TryGetValue(key, out v); return v; }
+  static bool Number(object v, out double d) {
+    d = 0;
+    if (v is int) { d = (int)v; return true; }
+    if (v is long) { d = (long)v; return true; }
+    if (v is double) { d = (double)v; return true; }
+    if (v is float) { d = (float)v; return true; }
+    if (v is decimal) { d = (double)(decimal)v; return true; }
+    string s = v as string;
+    if (s != null) return double.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out d);
+    return false;
+  }
+  static int Int(object v, int def, int lo, int hi) {
+    double d;
+    if (!Number(v, out d) || double.IsNaN(d) || double.IsInfinity(d)) return def;
+    int n = (int)Math.Round(d);
+    return n < lo ? lo : n > hi ? hi : n;
+  }
+  static int? NullInt(object v) {
+    double d;
+    if (!Number(v, out d) || double.IsNaN(d) || double.IsInfinity(d)) return null;
+    int n = (int)Math.Round(d);
+    return n < -60000 ? -60000 : n > 60000 ? 60000 : n;
+  }
+  static float Num(object v, float def, float lo, float hi) {
+    double d;
+    if (!Number(v, out d) || double.IsNaN(d) || double.IsInfinity(d)) return def;
+    if (d < lo) d = lo;
+    if (d > hi) d = hi;
+    return (float)d;
+  }
+  static bool Bool(object v, bool def) { return v is bool ? (bool)v : def; }
+  static string Str(object v) {
+    string s = v as string;
+    if (s == null) return null;
+    s = s.Trim();
+    return s.Length == 0 ? null : s;
+  }
+  static string Position(object v) {
+    string s = Str(v);
+    if (s == null) return "top-center";
+    s = s.ToLowerInvariant();
+    return s == "top-left" || s == "top-right" || s == "custom" ? s : "top-center";
+  }
+  static string Align(object v) {
+    string s = Str(v);
+    if (s == null) return "center";
+    s = s.ToLowerInvariant();
+    return s == "left" || s == "right" ? s : "center";
+  }
+  /** #AARRGGBB and #RRGGBB both work; anything unreadable keeps the default. */
+  static Color ColorOf(object v, Color def) {
+    string s = Str(v);
+    if (s == null) return def;
+    if (s[0] == '#') s = s.Substring(1);
+    if (s.Length == 3) { string t = ""; foreach (char c in s) t += c.ToString() + c.ToString(); s = t; }
+    int rgb;
+    if (s.Length == 6 && int.TryParse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out rgb)) return Color.FromArgb(255, (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+    uint argb;
+    if (s.Length == 8 && uint.TryParse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out argb)) return Color.FromArgb((int)(argb >> 24), (int)((argb >> 16) & 255), (int)((argb >> 8) & 255), (int)(argb & 255));
+    return def;
+  }
+  static string Hex(Color c) { return "#" + c.A.ToString("X2") + c.R.ToString("X2") + c.G.ToString("X2") + c.B.ToString("X2"); }
+
+  /** What the last sign looks like, for the server's checks (op "status"). */
+  public static Hashtable Status() {
+    var bounds = new Hashtable();
+    bounds["x"] = placed.X; bounds["y"] = placed.Y; bounds["width"] = placed.Width; bounds["height"] = placed.Height;
+    var body = new Hashtable();
+    body["x"] = placedBody.X; body["y"] = placedBody.Y; body["width"] = placedBody.Width; body["height"] = placedBody.Height;
+    var font = new Hashtable();
+    font["family"] = mainUsed; font["size"] = mainPx; font["bold"] = mainBold;
+    var colors = new Hashtable();
+    colors["bg"] = Hex(styleBg); colors["text"] = Hex(styleText);
+    var h = new Hashtable();
+    h["signText"] = active ? name : stoppedText;
+    h["signBounds"] = bounds; h["signBody"] = body;
+    h["signOpacity"] = styleOpacity;
+    h["signFont"] = font; h["signColors"] = colors;
+    h["signCaptureExcluded"] = captureExcluded; h["signStyleApplied"] = styleApplied;
+    h["signPosition"] = stylePosition; h["signAlign"] = styleAlign;
+    h["signWidth"] = styleWidth; h["signHeight"] = styleHeight;
+    h["signVisible"] = active;
+    return h;
+  }
 
   static void Emit(string line) { var o = Out; if (o == null) return; lock (o) { o.WriteLine(line); o.Flush(); } }
 
@@ -590,50 +872,65 @@ public static class Sign {
   }
   static SizeF Measure(Graphics g, string text, Font font) { return text.Length == 0 ? SizeF.Empty : g.MeasureString(text, font, PointF.Empty, StringFormat.GenericTypographic); }
 
-  /** The capsule, drawn whole: its width follows the words, so they never run under the button. */
+  /** The capsule, drawn whole: its width follows the words unless the style pins one, and every part grows with height. */
   static void DrawCapsule() {
-    int shadow = S(10), height = S(38), pad = S(16), dot = S(8), gap = S(10);
+    int shadow = H(10), height = H(BaseHeight), pad = S(stylePadding), dot = H(8), gap = S(styleGap);
     SizeF nameSize, hintSize, stopSize;
     using (var probe = new Bitmap(1, 1)) using (var g = Graphics.FromImage(probe)) {
       g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-      nameSize = Measure(g, active ? name : stoppedText, strong); hintSize = active ? Measure(g, hint, quiet) : SizeF.Empty; stopSize = Measure(g, stopText, quiet);
+      nameSize = Measure(g, active ? name : stoppedText, mainFont); hintSize = active ? Measure(g, hint, hintFont) : SizeF.Empty; stopSize = Measure(g, stopText, stopFont);
     }
     int buttonWidth = active ? (int)stopSize.Width + S(24) : 0;
-    int inner = pad + dot + gap + (int)Math.Ceiling(nameSize.Width) + (active ? S(12) + (int)Math.Ceiling(hintSize.Width) + S(14) + buttonWidth - S(6) : pad - S(6)) + S(6) + (active ? S(5) : 0);
+    int needed = pad + dot + gap + (int)Math.Ceiling(nameSize.Width) + (active ? S(12) + (int)Math.Ceiling(hintSize.Width) + S(14) + buttonWidth - S(6) : pad - S(6)) + S(6) + (active ? S(5) : 0);
+    int inner = styleWidth > 0 ? (int)Math.Round(styleWidth * scale) : needed;
     int width = inner + shadow * 2, total = height + shadow * 2;
+    // A pinned width leaves the button on the right; the alignment only moves the dot and the words.
+    int spare = Math.Max(0, inner - needed);
+    int shift = styleWidth > 0 ? (styleAlign == "left" ? 0 : styleAlign == "right" ? spare : spare / 2) : 0;
     using (var picture = new Bitmap(width, total, PixelFormat.Format32bppPArgb))
     using (var g = Graphics.FromImage(picture)) {
       g.SmoothingMode = SmoothingMode.AntiAlias; g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-      var body = new RectangleF(shadow, shadow - S(4), inner, height);
-      for (int i = shadow; i > 0; i--) using (var path = Round(new RectangleF(body.X - i, body.Y - i + S(3), body.Width + i * 2, body.Height + i * 2), height / 2f + i))
+      var body = new RectangleF(shadow, shadow - H(4), inner, height);
+      for (int i = shadow; i > 0; i--) using (var path = Round(new RectangleF(body.X - i, body.Y - i + H(3), body.Width + i * 2, body.Height + i * 2), height / 2f + i))
         using (var soft = new SolidBrush(Color.FromArgb((int)(26 * Math.Pow(1 - (double)i / shadow, 2)), 0, 0, 0))) g.FillPath(soft, path);
       using (var path = Round(body, height / 2f)) {
-        using (var fill = new SolidBrush(Color.FromArgb(236, 24, 26, 32))) g.FillPath(fill, path);
-        using (var line = new Pen(Color.FromArgb(40, 255, 255, 255), Math.Max(1, S(1)))) g.DrawPath(line, path);
+        using (var fill = new SolidBrush(styleBg)) g.FillPath(fill, path);
+        if (styleBorder.A > 0) using (var line = new Pen(styleBorder, Math.Max(1, S(1)))) g.DrawPath(line, path);
       }
-      float cx = body.X + pad + dot / 2f, cy = body.Y + height / 2f;
+      float cx = body.X + pad + dot / 2f + shift, cy = body.Y + height / 2f;
       if (active) {
         // A slow breath around the dot: something is happening, without anything flashing.
-        double b = (Math.Sin(phase) + 1) / 2; float halo = dot / 2f + S(2) + (float)(b * S(4));
-        using (var ring = new SolidBrush(Color.FromArgb((int)(70 * (1 - b) + 20), Blue))) g.FillEllipse(ring, cx - halo, cy - halo, halo * 2, halo * 2);
+        double b = (Math.Sin(phase) + 1) / 2; float halo = dot / 2f + H(2) + (float)(b * H(4));
+        using (var ring = new SolidBrush(Color.FromArgb((int)(70 * (1 - b) + 20), styleDot))) g.FillEllipse(ring, cx - halo, cy - halo, halo * 2, halo * 2);
       }
-      using (var core = new SolidBrush(active ? Blue : Color.FromArgb(150, 155, 165))) g.FillEllipse(core, cx - dot / 2f, cy - dot / 2f, dot, dot);
-      float x = body.X + pad + dot + gap;
-      using (var white = new SolidBrush(Color.FromArgb(245, 247, 250))) g.DrawString(active ? name : stoppedText, strong, white, x, cy - nameSize.Height / 2f, StringFormat.GenericTypographic);
+      using (var core = new SolidBrush(active ? styleDot : Color.FromArgb(150, 155, 165))) g.FillEllipse(core, cx - dot / 2f, cy - dot / 2f, dot, dot);
+      float x = body.X + pad + dot + gap + shift;
+      using (var white = new SolidBrush(styleText)) g.DrawString(active ? name : stoppedText, mainFont, white, x, cy - nameSize.Height / 2f, StringFormat.GenericTypographic);
       button = Rectangle.Empty;
       if (active) {
         x += nameSize.Width + S(12);
-        using (var grey = new SolidBrush(Color.FromArgb(150, 156, 168))) g.DrawString(hint, quiet, grey, x, cy - hintSize.Height / 2f, StringFormat.GenericTypographic);
-        var pill = new RectangleF(body.Right - S(5) - buttonWidth, body.Y + S(5), buttonWidth, height - S(10));
-        using (var path = Round(pill, pill.Height / 2f)) using (var fill = new SolidBrush(Color.FromArgb(34, 255, 255, 255))) g.FillPath(fill, path);
-        using (var white = new SolidBrush(Color.FromArgb(240, 242, 246))) g.DrawString(stopText, quiet, white, pill.X + (pill.Width - stopSize.Width) / 2f, pill.Y + (pill.Height - stopSize.Height) / 2f, StringFormat.GenericTypographic);
+        using (var grey = new SolidBrush(styleHint)) g.DrawString(hint, hintFont, grey, x, cy - hintSize.Height / 2f, StringFormat.GenericTypographic);
+        var pill = new RectangleF(body.Right - H(5) - buttonWidth, body.Y + H(5), buttonWidth, height - H(10));
+        using (var path = Round(pill, pill.Height / 2f)) using (var fill = new SolidBrush(styleStopBg)) g.FillPath(fill, path);
+        using (var white = new SolidBrush(styleStopText)) g.DrawString(stopText, stopFont, white, pill.X + (pill.Width - stopSize.Width) / 2f, pill.Y + (pill.Height - stopSize.Height) / 2f, StringFormat.GenericTypographic);
         button = Rectangle.Round(pill);
       }
-      var screen = Screen.PrimaryScreen.WorkingArea;
-      capsule.Put(picture, new Point(screen.Left + (screen.Width - width) / 2, screen.Top + S(6)));
+      Screen screen = Screen.PrimaryScreen;
+      if (stylePosition == "custom") screen = Screen.FromPoint(new Point(styleX != null ? styleX.Value : 0, styleY != null ? styleY.Value : 0));
+      Rectangle area = screen.WorkingArea;
+      int atX, atY;
+      if (stylePosition == "top-left") { atX = area.Left + S(styleOffsetX); atY = area.Top + S(styleOffsetY); }
+      else if (stylePosition == "top-right") { atX = area.Right - width + S(styleOffsetX); atY = area.Top + S(styleOffsetY); }
+      else if (stylePosition == "custom") { atX = styleX != null ? styleX.Value : area.Left + (area.Width - width) / 2; atY = styleY != null ? styleY.Value : area.Top + S(styleOffsetY); }
+      else { atX = area.Left + (area.Width - width) / 2 + S(styleOffsetX); atY = area.Top + S(styleOffsetY); }
+      // Opacity only dims the layered window; the mouse and the Esc hook still see it whole.
+      capsule.Alpha = (byte)Math.Max(0, Math.Min(255, 255 * styleOpacity / 100));
+      capsule.Put(picture, new Point(atX, atY));
+      placed = new Rectangle(atX, atY, width, total);
+      placedBody = new Rectangle(atX + (int)body.X, atY + (int)body.Y, (int)body.Width, (int)body.Height);
     }
   }
-  /** A soft blue glow with rounded corners just around the window; owned by it, so above it and under whatever covers it. */
+  /** A soft blue glow with rounded corners just around the window; kept just above it, so under whatever covers it. */
   static void Follow() {
     RECT r;
     int spread = S(9);
@@ -664,6 +961,8 @@ public static class Sign {
     // A full-screen game is often always-on-top too and comes back over the sign each time the agent clicks into it:
     // while the agent is on the whole screen, the sign is put back on top, without taking the focus.
     if (target == IntPtr.Zero) { SetWindowPos(glow.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13); SetWindowPos(capsule.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13); }
+    // Above that window only: another window covering it still covers the glow, as an owned window would be.
+    else { SetWindowPos(glow.Handle, target, 0, 0, 0, 0, 0x13); }
   }
   static void Halt() {
     if (!active) return;
@@ -687,14 +986,13 @@ public static class Sign {
     try {
       SetThreadDpiAwarenessContext(new IntPtr(-4));
       scale = GetDpiForSystem() / 96.0;
-      strong = new Font("Microsoft YaHei UI", (float)(14 * scale), FontStyle.Bold, GraphicsUnit.Pixel);
-      quiet = new Font("Microsoft YaHei UI", (float)(12.5 * scale), FontStyle.Regular, GraphicsUnit.Pixel);
+      ApplyStyle(null);
       capsule = new Layer { FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual, TopMost = true, ShowInTaskbar = false, Cursor = Cursors.Hand };
       capsule.MouseUp += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left && button.Contains(e.Location)) Halt(); };
       glow = new Layer { Through = true, FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual, ShowInTaskbar = false };
       var made = capsule.Handle; made = glow.Handle;
       // WDA_EXCLUDEFROMCAPTURE: the agent's screenshots of the screen do not show the sign over what the agent is looking at.
-      SetWindowDisplayAffinity(capsule.Handle, 0x11); SetWindowDisplayAffinity(glow.Handle, 0x11);
+      captureExcluded = SetWindowDisplayAffinity(capsule.Handle, 0x11); SetWindowDisplayAffinity(glow.Handle, 0x11);
       follow = new System.Windows.Forms.Timer { Interval = 150 };
       follow.Tick += delegate { try { Follow(); } catch { } };
       breathe = new System.Windows.Forms.Timer { Interval = 50 };
@@ -717,14 +1015,15 @@ public static class Sign {
     capsule.BeginInvoke(work);
   }
 
-  public static void Show(long hwnd, string who, string help, string stop, string stopped) {
+  public static void Show(long hwnd, string who, string help, string stop, string stopped, string styleJson) {
     OnUi(delegate {
       fade.Stop();
       var next = new IntPtr(hwnd);
-      if (next != target) { glow.Hide(); glowAt = Rectangle.Empty; target = next; SetWindowLongPtr(glow.Handle, -8, target); }
+      if (next != target) { glow.Hide(); glowAt = Rectangle.Empty; target = next; }
       // Set every time: the elevated helper's first sign is on the whole screen, which is no change from where it starts.
       glow.TopMost = target == IntPtr.Zero;
       name = who; hint = help; stopText = stop; stoppedText = stopped;
+      ApplyStyle(styleJson);
       if (!active) lastEscape = 0;
       active = true;
       DrawCapsule();
@@ -742,7 +1041,15 @@ public static class Sign {
     [Sign]::Out = $writer
     $script:signLoaded = $true
   }
-  if ($a.show) { [Sign]::Show([long]$a.hwnd, [string]$a.text, [string]$a.hint, [string]$a.stop, [string]$a.stopped) } else { [Sign]::Hide() }
+  if ($a.show) {
+    # The banner contract arrives as an object; it is handed to the C# as one compact line.
+    $styleJson = $null
+    if ($null -ne $a.style) {
+      if ($a.style -is [string]) { $styleJson = [string]$a.style }
+      else { $styleJson = ConvertTo-Json -InputObject $a.style -Compress -Depth 8 }
+    }
+    [Sign]::Show([long]$a.hwnd, [string]$a.text, [string]$a.hint, [string]$a.stop, [string]$a.stopped, $styleJson)
+  } else { [Sign]::Hide() }
   return @{}
 }
 
@@ -822,13 +1129,24 @@ function Run($op, $a) {
   switch ($op) {
     'windows' { return @{ windows = @([Desk]::Windows()); foreground = [Desk]::Foreground() } }
     'apps' { return @{ apps = @(Get-StartApps | ForEach-Object { @{ name = $_.Name; appId = $_.AppID } }) } }
-    'launch' { Start-Process "shell:AppsFolder\$($a.appId)"; return @{} }
+    'launch' {
+      if ($a.path) {
+        $start = @{ FilePath = [string]$a.path }
+        if ($a.args) { $start.ArgumentList = @([string]$a.args) }
+        Start-Process @start
+        return @{}
+      }
+      Start-Process "shell:AppsFolder\$($a.appId)"; return @{}
+    }
     # ShellExecute: the browser fetches the page itself; no synthetic keys into Chromium.
     'url' { Start-Process -FilePath ([string]$a.url); return @{} }
     'shot' { return [Desk]::Shot([long]$a.hwnd, [string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int]$a.markX, [int]$a.markY) }
     'click' { [Desk]::Click([long]$a.hwnd, [int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
     'scroll' { [Desk]::Scroll([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
-    'type' { [Desk]::Type([long]$a.hwnd, [string]$a.text); return @{} }
+    'move' { [Desk]::Move([long]$a.hwnd, [int]$a.x, [int]$a.y); return @{} }
+    'close' { [Desk]::Close([long]$a.hwnd); return @{} }
+    'openfile' { Start-Process -FilePath ([string]$a.file); return @{} }
+    'type' { [Desk]::Type([long]$a.hwnd, [string]$a.text, [int]$a.delay); return @{} }
     'key' { [Desk]::Key([long]$a.hwnd, [int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return @{} }
     'restore' { return @{ restored = [Desk]::Restore([long]$a.hwnd) } }
     'refocus' { return @{ refocused = [Desk]::Refocus([long]$a.hwnd) } }
@@ -838,10 +1156,13 @@ function Run($op, $a) {
     'drag' { [Desk]::Drag([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
     'rdrag' { [Desk]::RealDrag([int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
     'rclick' { [Desk]::RealClick([int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
-    'rtype' { [Desk]::RealType([string]$a.text); return @{} }
+    'rtype' { [Desk]::RealType([string]$a.text, [int]$a.delay); return @{} }
     'rkey' { [Desk]::RealKey([int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return @{} }
     'rscroll' { [Desk]::RealScroll([int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
+    'rmove' { [Desk]::RealMove([int]$a.x, [int]$a.y); return @{} }
+    'rclose' { [Desk]::RealClose(); return @{} }
     'sign' { return Sign $a }
+    'status' { return SignStatus }
     'sheet' { return [Desk]::Sheet([string[]]@($a.files), [string[]]@($a.labels), [string]$a.file, [int]$a.columns, [int]$a.tile) }
     'notifications' { return Notifications }
     'flashes' { return Flashes }

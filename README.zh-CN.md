@@ -10,8 +10,9 @@
 面向 **DeepSeek Harness** 的电脑操作能力，通过模型上下文协议（stdio）提供：Agent 先自己摸索出某个网站或桌面程序怎么用，把过程存成操作，之后直接重放，不必每次都重新探索。
 
 - 网页操作，以及在 Windows 上的后台桌面操作。
+- `init` 生成的软件位置表：每个程序装在哪，加密保存，每次启动刷新，说「打开微信」不再需要你给路径。
 - 学会的操作是普通 JSON 文件：有版本、可修补、多个 Agent 之间可共享。
-- 一个 Node 进程，零运行时依赖，不需要另装任何东西。
+- 一次安装 DSH 插件，同时装上 MCP 服务与设置界面，一个 Node 进程、零运行时依赖。
 
 ## 目录
 
@@ -23,7 +24,7 @@
 - [工具](#工具)
 - [操作](#操作)
 - [桌面控制](#桌面控制)
-- [思考浮窗](#思考浮窗)
+- [浮窗与外观](#浮窗与外观)
 - [信箱](#信箱)
 - [消息记录](#消息记录)
 - [文件](#文件)
@@ -40,6 +41,12 @@
 | **学一次，之后重放** | 一次成功的操作流程被存成操作文件；下次直接执行，修补时更新同一个文件。 |
 | **网页操作** | 9 个 `page_*` 工具驱动独立配置下的 Edge 或 Chrome，Agent 用自己的登录态，不碰你的浏览器。 |
 | **后台桌面操作** | Agent 只看一个窗口的截图，输入直接投给那个窗口。你的鼠标、焦点、剪贴板都不受影响；被其它窗口遮住的窗口照样能读、能点。 |
+| **工作时看得见** | Agent 在这台电脑上操作期间，屏幕顶部有一条横幅写着「DSH正在操作{app}」并带「停下」按钮。文字、大小、位置、颜色、字体、排版都可以改。 |
+| **每个动作都有理由** | 思考浮窗左边还有一块审计浮窗，逐条列出点击、滚动、双击、右键、键盘组合、开关程序与截图，后面跟着 Agent 给这一步的理由；同样的记录还会按天写进审计文件。 |
+| **按应用的前后台策略** | 可以只让某个程序走前台，其余仍留在后台。窗口选择器帮你填好规则，后台规则还能让这个程序不再需要整屏截图。 |
+| **知道你程序在哪** | `init` 扫开始菜单、App Paths、卸载表与 Program Files，结果加密存进 `apps-index.enc`，每次 DSH 启动刷新。`打开微信` 不再需要你提供路径。 |
+| **第一次启动就自测** | 第一次启动会先用浏览器工具跑一个本地页面，再在一块科幻 HUD 上做 13 项动作诊断：左键、双击、右键、滚动、拖动、无点击移动、流式与非流式输入、键盘快捷键、打开/关闭应用、打开/关闭文档。随后写下 `init-report.json` 和一份带逐项矩阵与截图的 `.md`。随时可以 `evolution-computer-use-win init` 重跑。 |
+| **一次安装，两半都有** | 装 DSH 插件时同时注册 stdio MCP 服务与设置界面，不需要再装配套插件。 |
 | **会自愈的修补** | 重放失败时退回最近两个保存过的版本；结果会做检查，失效的选择器会当场报错，而不是显示「已完成」。 |
 | **可审计** | 每个操作都是可读的文件，每次改动都留下旧版本，每个桌面动作都经过一条可见、可停的通道。 |
 
@@ -50,12 +57,22 @@
 | **系统** | Windows 10 或 11。两部分都依赖它：找浏览器是在 Windows 安装目录里找 `msedge.exe` / `chrome.exe`，桌面控制也只有 Windows 版。 |
 | **Node.js** | 22.16.0 或更高。除本包以外不需要装任何东西。 |
 | **浏览器** | 默认安装在 Windows 上的 Microsoft Edge 或 Google Chrome。Agent 会用独立配置启动自己的实例。 |
-| **宿主** | 任何 stdio MCP 宿主都能跑通协议，但只为 **DeepSeek Harness** 做了适配。配套插件 `dsh-evolution-desktop-mode` 提供桌面模式开关和思考浮窗。 |
+| **宿主** | **DeepSeek Harness**，需要支持插件。本项目本身就是一个 DSH 插件包：同一次安装同时加上设置页并注册自带的 MCP 服务。未适配其他 Agent 应用。 |
 | **权限** | 后台桌面操作不需要；前台模式需要管理员权限，会弹出 UAC。 |
 
 ## 安装
 
-### 从源码（当前可用的方式）
+### 作为 DSH 插件（推荐）
+
+把已发布的包安装到一个目录：
+
+```powershell
+npm install evolution-computer-use-win
+```
+
+然后把 `node_modules/evolution-computer-use-win` 作为 DSH 插件包装上：打开 **设置 → 插件 → 从文件夹安装**，选择这个目录。在 Agent 会话里，也可以用 `plugin_manager` 的 `action: "install_bundle"` 并传绝对路径。一次安装就同时加上设置页并自动注册 MCP 服务——不需要再写 `mcpServers`，也不需要配套插件。
+
+如果想改源码，先编译一份 checkout，再选择 checkout 目录：
 
 ```powershell
 git clone https://github.com/thefreedoomdoor/evolution-computer-use-win
@@ -64,30 +81,15 @@ npm install
 npm run build
 ```
 
-npm 包 `evolution-computer-use-win` 尚未发布；发布之后 `npx -y evolution-computer-use-win` 可以替代上面的 clone 步骤。
+如果之前装过独立的 `dsh-evolution-desktop-mode` 插件，请先在插件管理里移除它：本包已经内置同一套设置页，两者使用相同的插件 id，不能并存。
 
-### DeepSeek Harness
+安装后的第一次启动会在后台跑 `init`：扫描软件位置进加密表，并跑电脑操作自测、写报告（见[配置](#配置)）。随时可以运行 `evolution-computer-use-win init` 做一次完整检查。
 
-把服务加到 DSH 的 MCP 配置里，`command` 指向编译后的 CLI：
-
-```json
-{
-  "mcpServers": {
-    "computer-use": {
-      "command": "node",
-      "args": ["C:/path/to/evolution-computer-use-win/lib/cli.js", "--desktop", "background"]
-    }
-  }
-}
-```
-
-要看思考浮窗，再装配套插件 `dsh-evolution-desktop-mode`（见 [思考浮窗](#思考浮窗)）。不带 `--desktop` 时桌面控制默认关闭，Agent 之后可以用 `desktop_mode` 打开。
-
-> **未适配其他 Agent 应用。** MCP 服务本身与宿主无关，但只有 DSH 真正驱动它：浮窗的写侧是一个 DSH 插件，其它宿主都未验证。
+> **未适配其他 Agent 应用。** MCP 服务本身与宿主无关，但只有 DSH 真正驱动它：插件这一半、浮窗写侧和设置页都是 DSH 专用的，其它宿主都未验证。
 
 ## 快速开始
 
-1. 按上面的配置加好服务，重启宿主。
+1. 按上面的说明装好插件，重启 DSH。第一次启动会扫描软件并跑自测；之后随时可以让 Agent 运行 `init` 重跑。
 2. 用日常说法提要求，例如「看看我 B 站有没有新私信」。
 3. Agent 调 `computer_use("B站")` 取这个分类的说明，用 `page_*` 工具操作页面，回答，并把跑通的步骤存下来：
 
@@ -104,11 +106,12 @@ procedure_save({ ... })                  → bilibili/看未读.json
 ## 配置
 
 ```text
-evolution-computer-use-win [serve|resume|routines|status] [选项]
+evolution-computer-use-win [init|serve|resume|routines|status] [选项]
 ```
 
 | 命令 | 作用 |
 | --- | --- |
+| `init` | 扫描软件位置并跑电脑操作自测，然后打印 Markdown 报告（`--json` 输出 JSON）。这是完整扫描；插件第一次启动时也会自动做。 |
 | `serve` | 默认。以 stdio 运行 MCP 服务。 |
 | `resume` | 解除紧急停止，让桌面控制重新可用。 |
 | `routines` | 把每个 `onAlarm` 操作跑一遍，供定时任务调用。 |
@@ -125,7 +128,12 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 | `--no-inbox` | 关 | 不监视任务栏与通知。 |
 | `--no-messages` | 关 | 不写 `messages.jsonl`。 |
 | `--no-overlay` | 关 | 完全不启动浮窗助手。 |
+| `--skip-selftest` | 关 | `init` 时只扫描，不跑自测。 |
+| `--network` | 关 | `init` 自测允许访问外网；默认只用本地页面。 |
+| `--json` | 关 | `init` 以 JSON 打印结果。 |
 | `-h`、`--help` | | 打印用法。 |
+
+`EVOLUTION_CU_NO_AUTO_INIT=1` 会跳过服务启动时的自动扫描与自测；宿主想自己管理 `init` 时用。
 
 首次运行后的数据目录：
 
@@ -137,11 +145,21 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 │  ├─ bilibili/看未读.v2.json   保留的上一版
 │  └─ bilibili/目录.md          该分类的说明，≤ 1000 字符
 ├─ messages.jsonl            抽取出的消息，一行一条
+├─ apps-index.enc            加密的软件位置表
+├─ init-report.json          最近一次完整 init 报告（另有 init-report.md）
+├─ startup-report.json       最近一次启动扫描与自测结果
+├─ selftest/                 自测截图
 ├─ desktop-mode.json         DSH 插件写入，每 0.8 秒读取一次
 ├─ activity.json             浮窗内容，由 DSH 插件写入
 ├─ activity-settings.json    浮窗的位置、大小、不透明度、锁定
+├─ appearance.json           操作横幅、思考浮窗、审计浮窗的外观
+├─ app-policies.json         按程序的前后台规则
+├─ audit/                    audit-YYYY-MM-DD.jsonl、audit-live.tsv、shots/
+├─ fonts/                    上传的字体，供横幅与浮窗使用
 └─ overlay.lock              单实例锁，由服务器进程持有
 ```
+
+插件写入的这些路径——`desktop-mode.json`、`activity.json`、`activity-settings.json`、`appearance.json`、`app-policies.json`、`audit/`、`fonts/`——始终在 `~/.evolution-computer-use/`，`--data` 改了也不移动。
 
 ## 工具
 
@@ -156,13 +174,14 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 | | `page_wait` | 等某段文字或某个元素出现。 |
 | | `page_shot` | 截取页面。 |
 | | `page_eval` | 在页面里跑一小段脚本并返回 JSON。 |
-| 桌面 | `desktop` | 操作用户的电脑：`open`、`shot`、`click`、`drag`、`type`、`press`、`scroll`、`zoom`、`record` / `stop` / `review`。仅在桌面控制开启时可用。 |
+| 桌面 | `desktop` | 操作用户的电脑：`open`、`shot`、`click`、`drag`、`type`、`press`、`scroll`、`zoom`、`record` / `stop` / `review`。仅在桌面控制开启时可用。可选的 `reason` 会作为这次调用的理由显示在审计浮窗与审计记录里。 |
 | | `desktop_mode` | 运行时在 `off`、`background`、`foreground` 之间切换。始终存在，因此可以用它打开桌面控制；切前台需要 `confirm: true`。 |
 | 操作 | `computer_use` | 说明这次要用哪个程序或网站，返回该分类的说明、操作名和目录；不带参数时列出可用模块、分类和故障。 |
 | | `procedure_run` | 重放学会的操作；`path` 为 `分类/操作`。 |
 | | `procedure_save` | 把跑通的步骤存成操作；不带 `json` 时返回完整格式说明。 |
 | | `procedure_note` | 写某个分类的说明：对应哪个程序或网站、网址与别称、注意事项。 |
 | | `procedure_routines` | 把每个 `onAlarm` 网页操作各跑一次，各用单独的标签页。 |
+| 初始化 | `init` | 扫描软件位置进加密表，并跑电脑操作自测，返回报告。第一次启动时自动运行。 |
 | 信箱 | `inbox_read` | 报告有什么在等着：任务栏闪烁与系统通知。仅在信箱开启时可用。 |
 
 工具清单在服务启动后固定，只有一个例外：切换桌面模式会让 `desktop` 工具出现或消失，此时服务发 `notifications/tools/list_changed`。`inbox_read` 是否存在由启动时的 `--no-inbox` 决定。学会新操作不会改变清单，因此存操作不会让宿主的 prompt cache 失效。
@@ -249,22 +268,60 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 
 **停止。** 在半秒内连按两下 Esc，或点 Agent 工作时屏幕上横幅里的「停下」按钮。之后数据目录里会留下 `desktop-stopped` 文件，所有桌面操作都被拒绝，直到执行 `evolution-computer-use-win resume` 才恢复。运行中的调用被叫停后，会在下一步生效。
 
-## 思考浮窗
+### 按应用策略
 
-Agent 在这台电脑上干活时，屏幕右上角会出现一块深色浮窗：当前是第几步、正在做什么，下面是实时的思考与回复。它只读、默认鼠标穿透，Windows 又把它排除在捕获之外，所以它不会出现在截图或录制里。
+上面三种模式是全局设置。`app-policies.json`（在插件设置页的「按应用」里编辑）可以为单个程序加规则，匹配方式三选一：
+
+| `match` | 匹配什么 |
+| --- | --- |
+| `exe:Weixin.exe` | 程序的 exe 文件名，不分大小写；`exe` 与 `exe.exe` 视为同一个。 |
+| `app:微信` | Agent 传给 `open` 的程序名。 |
+| `title:无标题 - Notepad` | 窗口标题，用于同一个 exe 打开多个文档的情况。 |
+
+首条命中生效；没有规则的程序按全局模式走。`mode: "foreground"` 表示动这个程序之前先申请管理员助手（UAC）——用户在弹窗里拒绝，这一步就失败，全局模式保持用户所选不变。`mode: "background"` 表示即使全局是前台，这个程序也按后台来做，只截它自己的窗口，不截整屏。离开那个借用前台助手的程序后，助手会自动关掉。
+
+设置页会用缩略图列出可见窗口，像 OBS 的窗口捕捉那样：点一个窗口，规则里就填好它的 `exe:` 名（文档窗口则用 `title:`）。
+
+已保存的操作按它记录时的 `where` 重放（`"desktop"` 是后台、`"screen"` 是前台），按应用策略不会改变操作的重放方式。
+
+## 浮窗与外观
+
+Agent 在这台电脑上干活时最多会出现三块窗口：顶部一条操作横幅、右上角的思考浮窗、以及它左边的审计浮窗。三块都由同一个 WinForms 小助手绘制，默认鼠标穿透，并请 Windows 把它们排除在捕获之外（`SetWindowDisplayAffinity` 的 `WDA_EXCLUDEFROMCAPTURE`）：窗口截图里不会有它们，整屏截图在部分系统上仍可能带上。可以在 DSH 插件设置页里调，也可以手改 `~/.evolution-computer-use/appearance.json`；每个字段都有默认值，文件缺了或写坏了都不影响使用。
+
+### 操作横幅
+
+顶部那条横幅写着「DSH正在操作{app}」：`{app}` 是程序 exe 去掉 `.exe`，或者 Agent 传给 `open` 的名字；都没有时就只剩「DSH正在操作」。旁边是提示「连按两下 Esc 停下」和「停下」按钮。第一个电脑或网页工具调用让它出现，连续 30 秒没有电脑操作、或回合结束后 20 秒收起。
+
+可调：四段文字；宽（`0` 表示按文字自适应）与高 28–120；不透明度 20–100%；位置 `top-left`、`top-center`、`top-right` 或 `custom` 配 `x`/`y`；背景、文字、提示、圆点、停止按钮、停止文字与边框六处颜色（`#AARRGGBB`，从调色板里选）；主文字、提示、停止三段字体（family、字号、加粗）；以及排版 `align`、`offsetX`、`offsetY`、`gap`、`padding`。字体可以用系统已装的，也可以在设置页上传 `.ttf`/`.otf`——上传的文件会复制到 `~/.evolution-computer-use/fonts/`；family 找不到时依次退回 Microsoft YaHei UI 与 Segoe UI。
+
+### 思考浮窗
+
+右上角的深色浮窗显示当前是第几步、正在做什么，下面是实时的思考与回复。它只读、默认鼠标穿透。
 
 **什么时候出现。** 只在 Agent 真的在操作这台电脑时出现：回合开始、单纯思考或写代码都不会显示。第一个电脑或网页工具调用（`desktop`、`page_*`、`computer_use`、`procedure_*`、`inbox_read`、`desktop_mode`）才让它出现，并把在那之前流出的思考接上。连续 30 秒没有电脑操作就收起；回合结束后再停留 20 秒收起。
 
-**设置。** 在 DSH 插件设置页：开关、位置（四个角）、宽 240–1600、高 160–1600、不透明度 20–100%、鼠标穿透锁。改完立即生效。
+**设置。** 开关、位置（四个角或自定义 x/y）、宽 240–1600、高 160–1600、不透明度 20–100%、鼠标穿透锁，以及颜色与字体。改完立即生效。
 
-浮窗由两半组成，靠一个文件对接，即 `activity.json`：
+### 审计浮窗
+
+第二块浮窗贴在思考浮窗左边，顶边对齐，逐行列出最近 40 个动作：时间、成功或失败、动作、程序与细节——`点击 (412,238)`、`双击 (412,238)`、`右键 (412,238)`、`拖动 (12,34)→(90,120)`、`按键 Ctrl+S`、`输入 12 个字`、`滚动 ↓`、`打开 微信`、`关闭 记事本`、`截图`——后面是 Agent 给这一步的理由。
+
+可调：开关；位置（默认 `left-of-thought`，也可四个角或自定义 x/y）；宽、高、不透明度；鼠标穿透锁；显示行数（默认 12）；是否显示时间、理由、缩略图；背景、边框、文字、次要文字、强调色、理由与截图标签的颜色；以及标题与正文两段字体。浮窗每秒读一次 `audit-live.tsv`，这个文件只保留最新 40 行，最新的在最后。
+
+### 审计记录
+
+每个桌面动作还会往 `~/.evolution-computer-use/audit/audit-YYYY-MM-DD.jsonl` 追加一行 JSON：`at`、`session`、`turn`、`tool`、`action`、`app`、`exe`、`title`、坐标、各类标志、按键与修饰键、文本、方向、秒数、`ok` 与结果、理由，以及截图的相对路径。理由优先用工具调用或操作步骤里的 `reason`；没给就用 `activity.json` 里 Agent 最后一段思考，截到 500 字。
+
+保留策略默认 7 天、截图最多 500 MB、最多 5,000 条；截图可以关掉。服务器停着的时候，整个目录随时可以删。
+
+思考浮窗与审计浮窗由两半组成，靠一个文件对接，即 `activity.json`：
 
 | 半边 | 在哪 | 作用 |
 | --- | --- | --- |
-| 写侧 | DSH 插件 `dsh-evolution-desktop-mode` | 订阅 DSH 的 `agent/assistant-stream`、`session/event`、`tools/execute`，把思考、回复、步骤原子写入。 |
+| 写侧 | 本包内置的 DSH 插件（`plugin/lib/index.js`） | 订阅 DSH 的 `agent/assistant-stream`、`session/event`、`tools/execute`，把思考、回复、步骤原子写入。 |
 | 读侧 | 本包 `src/desktop/overlay.ts` | 每秒读一次 `activity.json`，喂给 `scripts/windows-takeover.ps1` 画出的 WinForms 浮窗。 |
 
-之所以拆成两半，是因为单纯的 stdio MCP 服务看不到宿主的会话事件。换别的宿主，只需要自己补上写侧。`--no-overlay` 会跳过整块子系统。
+之所以拆成两半，是因为单纯的 stdio MCP 服务看不到宿主的会话事件；写侧由本包的插件部分提供。`--no-overlay` 会跳过整块子系统。
 
 ## 信箱
 
@@ -281,9 +338,17 @@ Agent 在这台电脑上干活时，屏幕右上角会出现一块深色浮窗�
 | `<data>/browser/` | 浏览器配置，含 Agent 的登录态。不要共享、同步或提交。 |
 | `<data>/procedures/` | 学会的操作与分类说明。 |
 | `<data>/messages.jsonl` | 抽取出的消息。 |
+| `<data>/apps-index.enc` | 加密的软件位置表（`apps-index.enc` 文件头，AES-256-GCM）。文件被删或损坏时，下次扫描会重建。 |
+| `<data>/init-report.json` / `.md` | 最近一次完整 `init` 的报告。 |
+| `<data>/startup-report.json` | 最近一次自动启动扫描与自测的结果。 |
+| `<data>/selftest/` | 自测过程中截的图。 |
 | `<data>/desktop-mode.json` | DSH 插件固定写到 `~/.evolution-computer-use/desktop-mode.json`，`--data` 不会移动它；服务每 0.8 秒读一次。 |
 | `<data>/activity.json` | 浮窗显示的内容，插件写到同一个固定目录；要让服务读别处，设 `EVOCU_ACTIVITY_FILE`。 |
 | `<data>/activity-settings.json` | 浮窗的位置、大小、不透明度与锁定，由插件在固定目录里读写。 |
+| `<data>/appearance.json` | 操作横幅、思考浮窗、审计浮窗的文字、颜色、字体与排版；插件写到固定目录。 |
+| `<data>/app-policies.json` | 按程序的前后台规则；插件写到固定目录，服务每 0.8 秒读一次。 |
+| `<data>/audit/` | `audit-YYYY-MM-DD.jsonl`（每个动作一行）、`audit-live.tsv`（审计浮窗读的最新 40 行）、`shots/`（截图）。 |
+| `<data>/fonts/` | 从设置页上传的字体。 |
 | `<data>/overlay.lock` | 单实例锁，由服务器进程持有，文件里是它的 PID。 |
 | `<data>/desktop-stopped` | 仅在紧急停止生效时存在。 |
 | 截图 | 系统临时目录，模型读过后立即删除。 |
@@ -296,6 +361,7 @@ Agent 在这台电脑上干活时，屏幕右上角会出现一块深色浮窗�
 - **桌面控制看得见屏幕。** 开启期间，Agent 能读它打开的任意窗口，也能用这台电脑上已登录的账号。关掉并重启即可收回。
 - **浏览器配置就是凭据库。** 本机任何能读到 `<data>/browser/DevToolsActivePort` 的程序都能驱动已登录的浏览器。不要以同一个 Windows 用户运行不可信的程序。
 - **操作文件与代码相邻。** `script` 步骤在页面源下、以 Agent 的会话执行。跑别人分享的操作之前，先读一遍。
+- **审计记录会留下痕迹。** `audit/` 记下 Agent 动了哪个程序、点了哪里、输入了什么，默认保留 7 天。不想留截图就在设置里关掉；服务器停着的时候可以直接删掉整个目录。
 
 ## 多个 Agent
 
@@ -313,7 +379,7 @@ npm test             # node --test
 npm run build        # 输出到 lib/
 ```
 
-测试共 172 个用例（170 通过、2 跳过），覆盖 MCP 协议、操作格式与操作库，以及用假 shell 测的桌面驱动。`npm run prepack` 会在发布前跑类型检查与构建。
+测试共 221 个用例（219 通过、2 跳过），覆盖 MCP 协议、操作格式与操作库、外观与策略解析、审计记录，以及用假 shell 测的桌面驱动。`npm run prepack` 会在发布前跑类型检查与构建。
 
 ## 设计说明
 

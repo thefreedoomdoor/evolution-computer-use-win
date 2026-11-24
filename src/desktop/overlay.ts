@@ -12,12 +12,17 @@
  * 而 activity.json 是共享的，所以浮窗只能有一块：谁先认领 `<数据目录>/overlay.lock`
  * 谁画，其余进程待命，每轮再看一次——持有者崩了或退出了，待命的那个接管。
  *
+ * 外观来自 appearance.json（src/appearance.ts）：思考窗与审计窗的尺寸、位置、透明度、
+ * 颜色、字体都由用户配置；activity.json 里的 position/width/height/opacity/locked 只在
+ * appearance.json 还没写 thought 段时作为旧版回退。
+ *
  * 环境变量：EVOCU_ACTIVITY_FILE（默认 ~/.evolution-computer-use/activity.json）
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { auditDir, appearanceFile, readAppearance } from '../appearance.ts';
 import { helperStrings } from './overlay-strings.ts';
 import { fileURLToPath } from 'node:url';
 
@@ -52,6 +57,30 @@ type Activity = {
     reply?: string;
     steps?: unknown[];
   };
+};
+
+/**
+ * appearance.json 里有没有写 thought 段：写了就完全以它为准；老版本的插件只写
+ * activity.json，那时才用它的 position/width/height/opacity/locked 回退。
+ */
+let thoughtPresence: { stamp: number; present: boolean } = { stamp: -1, present: false };
+const appearanceHasThought = (): boolean => {
+  try {
+    const file = appearanceFile();
+    const stamp = statSync(file).mtimeMs;
+    if (thoughtPresence.stamp === stamp) return thoughtPresence.present;
+    const raw = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) as { thought?: unknown } | null;
+    thoughtPresence = { stamp, present: !!raw && typeof raw === 'object' && raw.thought !== undefined };
+  } catch { thoughtPresence = { stamp: -1, present: false }; }
+  return thoughtPresence.present;
+};
+
+/** appearance.json 的 #RRGGBB 补成助手要的 #AARRGGBB；已经是 #AARRGGBB 就保留。 */
+const argb = (color: string): string => {
+  const value = (color ?? '').trim();
+  if (/^#[0-9a-f]{8}$/i.test(value)) return '#' + value.slice(1).toUpperCase();
+  if (/^#[0-9a-f]{6}$/i.test(value)) return '#FF' + value.slice(1).toUpperCase();
+  return '';
 };
 
 const readJson = (file: string): Activity | undefined => {
@@ -263,16 +292,56 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
     const activity = readJson(activityFile);
     // DSH 插件设置里的总开关：overlayEnabled 为 false 时浮窗隐藏（助手留着，随时可再开）。
     if (!activity || activity.overlayEnabled === false) { void helper?.command('progress', { enabled: false, progress: {} }); return; }
+    // 外观来自 appearance.json（appearance 优先）；文件里还没写 thought 段时用
+    // activity.json 的旧字段回退。审计窗没有旧版字段，始终跟随 appearance.audit。
+    const appearance = readAppearance();
+    const thought = appearance.thought;
+    const audit = appearance.audit;
+    const legacy = appearanceHasThought() ? undefined : activity;
     const payload = {
       enabled: activity.active !== false,
       turnKey: (activity.sessionId ?? '') + ':' + (activity.turn ?? ''),
       settings: {
         progressOverlayEnabled: true,
-        progressOverlayPosition: activity.position ?? 'top-right',
-        progressOverlayWidth: activity.width ?? 360,
-        progressOverlayHeight: activity.height ?? 240,
-        progressOverlayOpacity: activity.opacity ?? 60,
-        progressOverlayLocked: activity.locked ?? true,
+        progressOverlayPosition: legacy?.position ?? thought.position,
+        progressOverlayWidth: legacy?.width ?? thought.width,
+        progressOverlayHeight: legacy?.height ?? thought.height,
+        progressOverlayOpacity: legacy?.opacity ?? thought.opacity,
+        progressOverlayLocked: legacy?.locked ?? thought.locked,
+        ...(thought.position === 'custom' && typeof thought.x === 'number' && typeof thought.y === 'number'
+          ? { progressOverlayX: thought.x, progressOverlayY: thought.y } : {}),
+        progressOverlayBg: argb(thought.colors.bg),
+        progressOverlayBorder: argb(thought.colors.border),
+        progressOverlayText: argb(thought.colors.text),
+        progressOverlayMuted: argb(thought.colors.muted),
+        progressOverlayAccent: argb(thought.colors.accent),
+        progressOverlayFontFamily: thought.fonts.title.family || thought.fonts.body.family,
+        progressOverlayTitleSize: thought.fonts.title.size,
+        progressOverlayBodySize: thought.fonts.body.size,
+        auditOverlayEnabled: audit.enabled,
+        auditOverlayPosition: audit.position,
+        auditOverlayWidth: audit.width,
+        auditOverlayHeight: audit.height,
+        auditOverlayOpacity: audit.opacity,
+        auditOverlayLocked: audit.locked,
+        ...(typeof audit.x === 'number' ? { auditOverlayX: audit.x } : {}),
+        ...(typeof audit.y === 'number' ? { auditOverlayY: audit.y } : {}),
+        auditOverlayGap: audit.layout.gap,
+        auditOverlayRows: audit.layout.rows,
+        auditOverlayShowTime: audit.layout.showTime,
+        auditOverlayShowReason: audit.layout.showReason,
+        auditOverlayShowThumb: audit.layout.showThumb,
+        auditOverlayBg: argb(audit.colors.bg),
+        auditOverlayBorder: argb(audit.colors.border),
+        auditOverlayText: argb(audit.colors.text),
+        auditOverlayMuted: argb(audit.colors.muted),
+        auditOverlayAccent: argb(audit.colors.accent),
+        auditOverlayReason: argb(audit.colors.reason),
+        auditOverlayShot: argb(audit.colors.shot),
+        auditOverlayFontFamily: audit.fonts.title.family || audit.fonts.body.family,
+        auditOverlayTitleSize: audit.fonts.title.size,
+        auditOverlayBodySize: audit.fonts.body.size,
+        auditOverlayData: join(auditDir(), 'audit-live.tsv'),
       },
       progress: {
         status: activity.progress?.status ?? 'waiting',

@@ -1,6 +1,9 @@
-import { readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { bannerText, readAppearance } from '../appearance.ts';
+import type { AppEntry } from '../apps/index.ts';
+import type { AuditSink } from '../audit.ts';
 import type { DesktopDriver } from './driver.ts';
 import { isRunning } from './processes.ts';
 import { createRecording } from './recording.ts';
@@ -30,7 +33,7 @@ export const DESKTOP_KEYS = 'return、tab、escape、space、backspace、delete�
 
 /** `owner` is the window it belongs to (0 for a main window): dialogs and panels such as WeChat's Moments composer. */
 export interface Listed { hwnd: number; owner: number; pid: number; exe: string; title: string; minimized: boolean; width: number; height: number }
-interface Window { hwnd: number; pid: number; app: string }
+interface Window { hwnd: number; pid: number; app: string; exe?: string; title?: string }
 /** The last picture of the current window: how many window pixels one picture pixel is, and its size. */
 interface View { scale: number; width: number; height: number }
 
@@ -81,9 +84,13 @@ export function createDesktop(deps: {
   companion?(): string;
   /** A banner that could not be drawn: said in the host's health, never a failed action of the agent's. */
   signFault?(text: string | undefined): void;
+  /** 审计：agent 在用户电脑上的每一步都记一条，给用户看的那个窗口读。 */
+  audit?: AuditSink;
   lingerMs?: number;
   /** Opens the address in the agent's own browser (CDP, behind other windows) and returns the page title; nothing is typed into the user's windows. */
   browse?(url: string): Promise<string | undefined>;
+  /** 加密软件位置表：已知程序直接用 exe 路径启动，不必每次问开始菜单。 */
+  apps?: { resolve(name: string): AppEntry | undefined };
 }) {
   const running = deps.running ?? isRunning, settleMs = deps.settleMs ?? SETTLE_MS, appearMs = deps.appearMs ?? APPEAR_MS;
   let window: Window | undefined, view: View | undefined, shots = 0;
@@ -119,7 +126,8 @@ export function createDesktop(deps: {
   /** A window that went away (closed, minimized, into the tray) is never pictured; the agent is told and opens it again. */
   async function visible(): Promise<{ open: Window; windows: Listed[] }> {
     const open = current(), { windows } = await list();
-    if (windows.some(entry => entry.hwnd === open.hwnd && !entry.minimized)) return { open, windows };
+    const here = windows.find(entry => entry.hwnd === open.hwnd && !entry.minimized);
+    if (here) { open.exe = here.exe; open.title = here.title; return { open, windows }; }
     window = undefined; view = undefined;
     throw new Error(`${open.app} 的窗口不见了（关掉了、最小化了或收进了托盘）：先 desktop open 它`);
   }
@@ -202,6 +210,16 @@ export function createDesktop(deps: {
     return { windows, told: `它收在托盘里，已经从托盘图标点开；${await giveBack(foreground)}${moved}\n` };
   }
   async function launch(name: string, foreground: number, before: Set<number>): Promise<{ windows: Listed[]; told: string }> {
+    // 软件位置表里有就用它：把完整的 exe 路径交给 Windows，比从开始菜单猜 appId 可靠，也不受语言影响。
+    const known = deps.apps?.resolve(name);
+    if (known?.exe && existsSync(known.exe)) {
+      const exe = known.exe.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '');
+      if (await running(exe)) throw new Error(`${known.name} 开着，但没有窗口，托盘里也找不到它的图标；再启动会多开一个，所以不启动。请用户把它打开。`);
+      await call('launch', { path: known.exe, args: known.args ?? '' });
+      const windows = await appear(known.name, exe, before);
+      if (!windows.length) throw new Error(`${known.name} 启动了，但 ${appearMs / 1000} 秒内没有出现窗口`);
+      return { windows, told: `${known.name} 没开，已经从软件位置表启动；${await giveBack(foreground)}\n` };
+    }
     const apps = ((await call('apps')).apps as { name: string; appId: string }[] | undefined) ?? [];
     const wanted = name.toLowerCase();
     const app = apps.find(entry => entry.name.toLowerCase() === wanted) ?? apps.find(entry => entry.name.toLowerCase().includes(wanted));
@@ -213,7 +231,51 @@ export function createDesktop(deps: {
     if (!windows.length) throw new Error(`${app.name} 启动了，但 ${appearMs / 1000} 秒内没有出现窗口`);
     return { windows, told: `${app.name} 没开，已经启动；${await giveBack(foreground)}\n` };
   }
-  async function open(app?: string, url?: string): Promise<DesktopResult> {
+  /** Waits for whichever window the launch or document open produced; a new window is not a known title yet. */
+  async function waitFresh(before: Set<number>): Promise<Listed | undefined> {
+    for (const deadline = Date.now() + appearMs; ;) {
+      const fresh = (await list()).windows.filter(entry => !before.has(entry.hwnd) && !entry.minimized && entry.title);
+      if (fresh.length) return largest(fresh);
+      if (Date.now() >= deadline) return undefined;
+      await pause(400);
+    }
+  }
+  async function adopt(entry: Listed, app: string, said: string): Promise<DesktopResult> {
+    if (window?.pid !== entry.pid) known = undefined;
+    window = { hwnd: entry.hwnd, pid: entry.pid, app, title: entry.title };
+    view = undefined;
+    return shot(said);
+  }
+  async function launchPath(path: string): Promise<DesktopResult> {
+    const before = new Set((await list()).windows.map(entry => entry.hwnd));
+    const exe = path.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '');
+    await call('launch', { path });
+    const entry = await waitFresh(before);
+    if (!entry) throw new Error(`启动了 ${path}，但 ${appearMs / 1000} 秒内没有出现窗口`);
+    return adopt(entry, exe || path, `已启动 ${path}（窗口：${entry.title}）；看截图确认。`);
+  }
+  async function openDocument(file: string): Promise<DesktopResult> {
+    if (!existsSync(file)) throw new Error(`要打开的文档不存在：${file}`);
+    const before = new Set((await list()).windows.map(entry => entry.hwnd));
+    await call('openfile', { file });
+    const entry = await waitFresh(before);
+    if (!entry) throw new Error(`用默认程序打开了 ${file}，但 ${appearMs / 1000} 秒内没有出现窗口`);
+    return adopt(entry, '文档', `已用默认程序打开 ${file}（窗口：${entry.title}）；看截图确认。`);
+  }
+  async function closeWindow(): Promise<DesktopResult> {
+    const open = current();
+    await call('close', { hwnd: open.hwnd });
+    for (const deadline = Date.now() + 4000; Date.now() < deadline;) {
+      const { windows } = await list();
+      if (!windows.some(entry => entry.hwnd === open.hwnd)) break;
+      await pause(200);
+    }
+    window = undefined; view = undefined;
+    return { text: `已关闭 ${open.app} 的窗口。` };
+  }
+  async function open(app?: string, url?: string, path?: string, file?: string): Promise<DesktopResult> {
+    if (path?.trim()) return launchPath(path.trim());
+    if (file?.trim()) return openDocument(file.trim());
     // 用户自己的 Edge/Chrome 无法从后台窗口输入（Chromium 丢弃投递的按键），ShellExecute 又会把它带到前台。
     // 所以网址交给 agent 自己的浏览器（CDP 驱动）：窗口留在后面，用户不动鼠标、不丢焦点，截图仍是该后台窗口的 PrintWindow。
     if (url?.trim()) {
@@ -264,7 +326,7 @@ export function createDesktop(deps: {
     }
     // Switching between one program's windows keeps what was seen; another program starts afresh.
     if (window?.pid !== chosen.pid) known = undefined;
-    window = { hwnd: chosen.hwnd, pid: chosen.pid, app: name };
+    window = { hwnd: chosen.hwnd, pid: chosen.pid, app: name, exe: chosen.exe, title: chosen.title };
     view = undefined;
     return shot(told);
   }
@@ -273,7 +335,11 @@ export function createDesktop(deps: {
   async function sign(show: boolean): Promise<void> {
     if (!deps.companion || (show && !window)) return;
     try {
-      await deps.driver.call('sign', show && window ? { show: true, hwnd: window.hwnd, text: `${deps.companion()}正在操作`, hint: '连按两下 Esc 停下', stop: '停下', stopped: '已停下' } : { show: false });
+      // 字和样式都由 appearance.json 说了算：{app} 换成 agent 正在操作的程序名。
+      const banner = readAppearance().banner;
+      await deps.driver.call('sign', show && window
+        ? { show: true, hwnd: window.hwnd, text: bannerText(window.app), hint: banner.hint, stop: banner.stop, stopped: banner.stopped, style: banner }
+        : { show: false });
       deps.signFault?.(undefined);
     } catch (error) { deps.signFault?.(`操作提示没能显示：${error instanceof Error ? error.message : String(error)}`); }
   }
@@ -293,7 +359,7 @@ export function createDesktop(deps: {
     record: input => watch.record(input),
     stop: () => watch.stop(),
     review: input => watch.review(input),
-    open: input => open(input.app, input.url),
+    open: input => open(input.app, input.url, input.path, input.file),
     shot: () => shot(),
     click: async input => {
       const at = onWindow(input.x, input.y);
@@ -305,11 +371,17 @@ export function createDesktop(deps: {
       await call('drag', { hwnd: current().hwnd, x: from.x, y: from.y, x2: to.x, y2: to.y, right: input.right === true, hold: holdMs(input.hold) });
       return after(dragged(input.hold), to);
     },
+    move: async input => {
+      const at = onWindow(input.x, input.y);
+      await call('move', { hwnd: current().hwnd, ...at });
+      return after('已把鼠标移过去，没有点击。', at);
+    },
+    close: () => closeWindow(),
     type: async input => {
       if (typeof input.text !== 'string' || !input.text) throw new Error('text 不能是空的');
       const at = input.x !== undefined || input.y !== undefined ? onWindow(input.x, input.y) : undefined;
       if (at) await call('click', { hwnd: current().hwnd, ...at, right: false, count: 1 });
-      await call('type', { hwnd: current().hwnd, text: input.text });
+      await call('type', { hwnd: current().hwnd, text: input.text, delay: input.stream === true ? 45 : 0 });
       if (input.submit) await call('key', { hwnd: current().hwnd, vk: VK.return, modifiers: [] });
       return after(input.submit ? '已输入并回车。' : '已输入。', at);
     },
@@ -334,11 +406,17 @@ export function createDesktop(deps: {
   };
 
   const turns = createTurns<DesktopInput>({
-    run, sign, recording, app: () => window?.app, ...(deps.lingerMs === undefined ? {} : { lingerMs: deps.lingerMs }),
+    run, sign, recording, app: () => window?.app, about: () => window ? { exe: window.exe, title: window.title } : undefined,
+    ...(deps.lingerMs === undefined ? {} : { lingerMs: deps.lingerMs }),
     acted: what => { acted = { what, at: Date.now() }; },
+    ...(deps.audit ? { audit: deps.audit } : {}),
   });
   return {
     actions: turns.actions, act: turns.act, recent: turns.recent, halt: turns.halt, release: turns.release, halted: turns.halted,
+    /** The window the agent is on, for the per-app policies and the audit window. */
+    about: () => window ? { app: window.app, exe: window.exe, title: window.title } : undefined,
+    /** Every window on the desktop, as the user's policies may name one by its executable. */
+    windows: async () => (await list()).windows,
     /** When the switch goes off: nothing the agent opened stays "current" for a later turn, and what the agent recorded is deleted. */
     reset(): void { window = undefined; view = undefined; known = undefined; acted = undefined; recording.clear(); turns.reset(); },
   };
@@ -347,8 +425,16 @@ export interface DesktopInput {
   action: string; app?: string; x?: number; y?: number; x2?: number; y2?: number; text?: string; submit?: boolean; key?: string; direction?: string; double?: boolean; right?: boolean;
   /** For `open`: a web address to hand to the browser (ShellExecute), for pages a background window cannot type into. */
   url?: string;
+  /** For `open`: an executable to launch, waiting for its window (an app whose name the software table does not know). */
+  path?: string;
+  /** For `open`: a document opened with its default program, waiting for the window. */
+  file?: string;
+  /** For `type`: true streams the characters one at a time, false posts them all at once. */
+  stream?: boolean;
   /** For `click`, `drag` and `press`: seconds to keep the button or the key down (a long press, or walking in a game). */
   hold?: number;
   /** For `record`: how long, and how far apart the frames are. For `review`: a stretch of the recording, or one moment of it. */
   seconds?: number; every?: number; from?: number; to?: number; at?: number; pause?: boolean;
+  /** 为什么做这一步：原样写进审计，用户看得见 agent 每一步的打算。 */
+  reason?: string;
 }

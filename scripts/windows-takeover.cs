@@ -5,7 +5,9 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.IO.MemoryMappedFiles;
 using System.Security.Principal;
@@ -358,6 +360,7 @@ namespace DshTakeover {
     readonly List<Frame> frames = new List<Frame>();
     PointerFrame pointer;
     ProgressFrame progress;
+    AuditFrame audit;
     PointerWatch pointerWatch;
     Native.Point? testOverlayCursor;
     DateTime progressPreviewUntil=DateTime.MinValue;
@@ -405,6 +408,7 @@ namespace DshTakeover {
         if(progress!=null&&progressPreviewUntil!=DateTime.MaxValue&&DateTime.UtcNow>progressPreviewUntil&&!progress.Adjusting){progressPreviewUntil=DateTime.MinValue;CloseProgress();}
         if(progressCloseWhenIdle&&progress!=null&&!progress.Adjusting)CloseProgress();
         TrackProgressPointer();
+        AuditFollow();
 
         double elapsed = hideAt == DateTime.MaxValue ? -1 : (DateTime.UtcNow - hideAt).TotalMilliseconds;
         if (elapsed >= 160) { HideFrames(); HidePointer(); armed = false; hideAt = DateTime.MaxValue; SyncTimer(); return; }
@@ -423,7 +427,7 @@ namespace DshTakeover {
       Emit(new { kind = "ready", hookActive = keyboard.Active, monitors = displays.Length, pid = System.Diagnostics.Process.GetCurrentProcess().Id });
     }
     void SyncTimer() {
-      bool active = !shuttingDown && (armed || hideAt != DateTime.MaxValue || frames.Count > 0 || pointer != null || progress != null);
+      bool active = !shuttingDown && (armed || hideAt != DateTime.MaxValue || frames.Count > 0 || pointer != null || progress != null || audit != null);
       if (active && !timer.Enabled) timer.Start();
       else if (!active && timer.Enabled) timer.Stop();
     }
@@ -549,7 +553,8 @@ namespace DshTakeover {
             ConfigureShortcut(settings!=null?Get(settings,"progressLockShortcut",""):"");progressKey=stopKey;progressModifiers=stopModifiers;
             stopKey=savedKey;stopModifiers=savedModifiers;stopShortcut=savedShortcut;}
             if(enabled)progress.UpdateProgress(data);
-            if(fresh)progress.Show();
+            if(fresh||(enabled&&!progress.Visible))progress.Show();
+            SyncAudit(settings);
             // The adjustment preview unlocks only while it lasts; the saved lock
             // state is untouched unless the user toggles it themselves.
             if(preview)progress.BeginPreview();else if(leavingPreview)progress.EndPreview();
@@ -595,6 +600,11 @@ namespace DshTakeover {
           ConfigureVisibility(Get(command,"remoteIndicatorVisible",remoteVisible));
           cursorIndicator = Get(command, "cursorIndicatorEnabled", cursorIndicator); UpdatePointer(255);
           if (prevShortcut != stopShortcut && armed && !paused && indicator && frames.Count > 0) { HideFrames(); ShowFrames(); }
+        } else if (action == "hide") {
+          HideFrames(); HidePointer();
+          if (progress != null && progress.Visible) progress.Hide();
+          if (audit != null && audit.Visible) audit.Hide();
+          SyncTimer();
         } else if (action == "end") {
           hideAt = DateTime.UtcNow.AddMilliseconds(idleMs);
         } else if (action == "stop") {
@@ -635,7 +645,7 @@ namespace DshTakeover {
         SyncTimer();
         if (testMode || action == "status") {
           Native.Point livePoint; bool liveCursorAvailable=Native.GetCursorPos(out livePoint);
-          Emit(new { id = id, ok = true, armed = armed, paused = paused, cancelled = cancel.WaitOne(0), consumed = consumed, uiWindowCount=Application.OpenForms.Count, stopShortcut = stopShortcut, windows = frames.Count, progressVisible=progress!=null, progressWindow=progress!=null?progress.Handle.ToInt64():0, progressClickThrough=progress!=null&&progress.ClickThrough, progressContent=progress!=null?progress.Content:null, progressLocked=progress!=null&&progress.Locked, progressHover=progress!=null?progress.HoverStatus():null, pointerWatchActive=pointerWatch!=null&&pointerWatch.Active, progressReading=progress!=null?progress.ReadingStatus():null, progressOpacity=progress!=null?progress.BackgroundOpacity:0, progressBounds=progress!=null?new {x=progress.Left,y=progress.Top,width=progress.Width,height=progress.Height}:null, remoteIndicatorVisible=remoteVisible, overlayCaptureExcluded=frames.Count>0&&frames.TrueForAll(frame=>frame.CaptureExcluded), overlayClickThrough=frames.Count>0&&frames.TrueForAll(frame=>frame.ClickThrough), displayRevision=displayRevision, displays=Array.ConvertAll(displays,r=>new {left=r.Left,top=r.Top,width=r.Width,height=r.Height}), overlayBounds=frames.ConvertAll(frame=>new {left=frame.DisplayBounds.Left,top=frame.DisplayBounds.Top,width=frame.DisplayBounds.Width,height=frame.DisplayBounds.Height}), cursorError = cursorError, liveCursorAvailable = liveCursorAvailable, pointerSource = testPointerPoint.HasValue ? "test-seam" : "windows", pointerVisible = pointer != null, pointerClickThrough = pointer != null && pointer.ClickThrough, pointerCaptureExcluded = pointer != null && pointer.CaptureExcluded, foreground = Native.GetForegroundWindow().ToInt64() });
+          Emit(new { id = id, ok = true, armed = armed, paused = paused, cancelled = cancel.WaitOne(0), consumed = consumed, uiWindowCount=Application.OpenForms.Count, stopShortcut = stopShortcut, windows = frames.Count, progressVisible=progress!=null, progressWindow=progress!=null?progress.Handle.ToInt64():0, progressClickThrough=progress!=null&&progress.ClickThrough, progressContent=progress!=null?progress.Content:null, progressLocked=progress!=null&&progress.Locked, progressHover=progress!=null?progress.HoverStatus():null, pointerWatchActive=pointerWatch!=null&&pointerWatch.Active, progressReading=progress!=null?progress.ReadingStatus():null, progressOpacity=progress!=null?progress.WindowOpacity:0, progressBounds=progress!=null?new {x=progress.Left,y=progress.Top,width=progress.Width,height=progress.Height}:null, auditVisible=audit!=null&&audit.Visible, auditBounds=audit!=null?new {x=audit.Left,y=audit.Top,width=audit.Width,height=audit.Height}:null, auditOpacity=audit!=null?Math.Round(audit.WindowOpacity,3):0, auditLocked=audit!=null&&audit.Locked, auditCaptureExcluded=audit!=null&&audit.CaptureExcluded, auditRows=audit!=null?audit.MaxRows:0, auditFont=audit!=null?audit.FontDescription:"", auditLines=audit!=null?audit.LineCount:0, auditData=audit!=null?audit.DataPath:"", remoteIndicatorVisible=remoteVisible, overlayCaptureExcluded=frames.Count>0&&frames.TrueForAll(frame=>frame.CaptureExcluded), overlayClickThrough=frames.Count>0&&frames.TrueForAll(frame=>frame.ClickThrough), displayRevision=displayRevision, displays=Array.ConvertAll(displays,r=>new {left=r.Left,top=r.Top,width=r.Width,height=r.Height}), overlayBounds=frames.ConvertAll(frame=>new {left=frame.DisplayBounds.Left,top=frame.DisplayBounds.Top,width=frame.DisplayBounds.Width,height=frame.DisplayBounds.Height}), cursorError = cursorError, liveCursorAvailable = liveCursorAvailable, pointerSource = testPointerPoint.HasValue ? "test-seam" : "windows", pointerVisible = pointer != null, pointerClickThrough = pointer != null && pointer.ClickThrough, pointerCaptureExcluded = pointer != null && pointer.CaptureExcluded, foreground = Native.GetForegroundWindow().ToInt64() });
         } else {
           Emit(new { id = id, ok = true, armed = armed, paused = paused, cancelled = cancel.WaitOne(0) });
         }
@@ -740,8 +750,30 @@ namespace DshTakeover {
       progressAvailable=false;
       progressCloseWhenIdle=false;
       if(progress!=null){progress.Dispose();progress=null;}
+      CloseAudit();
       if(pointerWatch!=null){pointerWatch.Dispose();pointerWatch=null;}
       SyncTimer();
+    }
+    // 审计窗和思考窗同显同隐：它跟着思考窗的位置走，由思考窗的 settings 配置。
+    void CloseAudit() {
+      if(audit!=null){audit.Dispose();audit=null;}
+      SyncTimer();
+    }
+    void SyncAudit(Dictionary<string,object> settings) {
+      bool enabled=settings==null||Get(settings,"auditOverlayEnabled",true);
+      if(!enabled){CloseAudit();return;}
+      if(audit==null)audit=new AuditFrame();
+      audit.Configure(settings);
+      if(progress!=null&&!progress.IsDisposed)audit.Follow(progress);
+      if(progress!=null&&progress.Visible){if(!audit.Visible)audit.Show();}
+      else if(audit.Visible)audit.Hide();
+    }
+    void AuditFollow() {
+      if(audit==null)return;
+      if(progress==null||progress.IsDisposed||!progress.Visible){if(audit.Visible)audit.Hide();return;}
+      audit.Follow(progress);
+      if(!audit.Visible)audit.Show();
+      audit.Poll();
     }
     // The overlay's lock button answers the user's own pointer only. The hook
     // runs only while a locked (or hover-unlocked) overlay is on screen.
@@ -775,12 +807,86 @@ namespace DshTakeover {
   // Independent progress window: never activates, captures input or arms Esc.
   // Per-pixel composition: the background can be translucent without fading text.
   // One physical-resolution surface also avoids opaque system scrollbars and DPI stretching.
+  // appearance.json 拍平后的 settings → GDI+ 的颜色与字体。用户上传的字体放在
+  // ~/.evolution-computer-use/fonts（插件负责复制），用 PrivateFontCollection 加载；
+  // 家族名未知时按契约回退 Microsoft YaHei UI，再回退 Segoe UI。
+  internal static class OverlayStyle {
+    static PrivateFontCollection uploaded;
+    static readonly HashSet<string> known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    static bool knownLoaded;
+    static readonly object sync = new object();
+    internal static Color Color(string text, Color fallback) {
+      string value = text == null ? "" : text.Trim();
+      if (value.StartsWith("#", StringComparison.Ordinal)) value = value.Substring(1);
+      uint number;
+      if (value.Length == 8 && uint.TryParse(value, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out number))
+        return System.Drawing.Color.FromArgb((int)((number >> 24) & 0xff), (int)((number >> 16) & 0xff), (int)((number >> 8) & 0xff), (int)(number & 0xff));
+      if (value.Length == 6 && uint.TryParse(value, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out number))
+        return System.Drawing.Color.FromArgb(255, (int)((number >> 16) & 0xff), (int)((number >> 8) & 0xff), (int)(number & 0xff));
+      return fallback;
+    }
+    internal static Color WithAlpha(Color color, int alpha) { return System.Drawing.Color.FromArgb(Math.Max(0, Math.Min(255, alpha)), color.R, color.G, color.B); }
+    // 整窗透明度：每个绘制色的 alpha 都乘上它，位图整体 alpha 就是窗口 alpha。
+    internal static Color Fade(Color color, double opacity) { return System.Drawing.Color.FromArgb(Math.Max(0, Math.Min(255, (int)Math.Round(color.A * opacity))), color.R, color.G, color.B); }
+    static void LoadKnown() {
+      lock (sync) {
+        if (knownLoaded) return;
+        knownLoaded = true;
+        try {
+          if (uploaded == null) {
+            uploaded = new PrivateFontCollection();
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".evolution-computer-use", "fonts");
+            if (Directory.Exists(dir)) {
+              string[] files = Directory.GetFiles(dir);
+              for (int i = 0; i < files.Length; i++) {
+                string file = files[i];
+                if (!file.EndsWith(".ttf", StringComparison.OrdinalIgnoreCase) && !file.EndsWith(".otf", StringComparison.OrdinalIgnoreCase)) continue;
+                try { uploaded.AddFontFile(file); } catch (Exception) { }
+              }
+            }
+          }
+          FontFamily[] own = uploaded.Families;
+          for (int i = 0; i < own.Length; i++) known.Add(own[i].Name);
+          using (var installed = new InstalledFontCollection()) {
+            FontFamily[] families = installed.Families;
+            for (int i = 0; i < families.Length; i++) known.Add(families[i].Name);
+          }
+        } catch (Exception) { }
+      }
+    }
+    internal static Font Create(string family, float pixels, FontStyle style, out string resolved) {
+      LoadKnown();
+      float size = Math.Max(6f, Math.Min(200f, pixels));
+      if (!String.IsNullOrWhiteSpace(family)) {
+        try {
+          FontFamily[] own = uploaded.Families;
+          for (int i = 0; i < own.Length; i++) {
+            if (!String.Equals(own[i].Name, family, StringComparison.OrdinalIgnoreCase)) continue;
+            try { resolved = own[i].Name; return new Font(own[i], size, style, GraphicsUnit.Pixel); } catch (Exception) { }
+          }
+        } catch (Exception) { }
+      }
+      string[] fallbacks = new string[] { family, "Microsoft YaHei UI", "Segoe UI", "Tahoma" };
+      for (int i = 0; i < fallbacks.Length; i++) {
+        string name = fallbacks[i];
+        if (String.IsNullOrWhiteSpace(name) || !known.Contains(name)) continue;
+        try { resolved = name; return new Font(name, size, style, GraphicsUnit.Pixel); } catch (Exception) { }
+      }
+      resolved = "Segoe UI";
+      return new Font(FontFamily.GenericSansSerif, size, style, GraphicsUnit.Pixel);
+    }
+  }
   internal sealed class ProgressFrame : Form {
     sealed class ReadingLine { internal string text; internal bool heading; internal ReadingLine(string s,bool h){text=s;heading=h;} }
     readonly List<ReadingLine> lines=new List<ReadingLine>();
     internal string Content="";
     internal bool Locked=true;
-    internal double BackgroundOpacity=.6;
+    // appearance.json 的 thought 外观：整窗透明度 + 颜色 + 字体（见 Present/Configure）。
+    internal double WindowOpacity=.6;
+    Color styleBackground=Color.FromArgb(153,25,29,38),styleBorder=Color.FromArgb(140,117,161,218),styleText=Color.FromArgb(255,246,247,250),styleMuted=Color.FromArgb(245,185,198,216),styleAccent=Color.FromArgb(255,91,143,239);
+    string styleFontFamily="";
+    float styleTitlePixels=14f,styleBodyPixels=14.667f;
+    internal string FontDescription="Microsoft YaHei UI 14/14.667";
     Font bodyFont,headingFont,titleFont,footerFont;
     string header="",subheader="",bodyText="";
     string[] headings=new string[0];
@@ -814,11 +920,15 @@ namespace DshTakeover {
     }
     void SetFonts(float next){
       if(bodyFont!=null){bodyFont.Dispose();headingFont.Dispose();titleFont.Dispose();footerFont.Dispose();}
-      scale=next;bodyFont=new Font("Microsoft YaHei UI",14.667f*scale,FontStyle.Regular,GraphicsUnit.Pixel);
-      headingFont=new Font("Microsoft YaHei UI",14.667f*scale,FontStyle.Bold,GraphicsUnit.Pixel);
-      titleFont=new Font("Microsoft YaHei UI",14*scale,FontStyle.Bold,GraphicsUnit.Pixel);
-      footerFont=new Font("Microsoft YaHei UI",11.5f*scale,FontStyle.Regular,GraphicsUnit.Pixel);
+      scale=next;string resolved;
+      // 字号是 96-DPI 像素，再乘窗口 DPI 缩放；家族按 OverlayStyle 的回退链解析。
+      bodyFont=OverlayStyle.Create(styleFontFamily,styleBodyPixels*scale,FontStyle.Regular,out resolved);
+      headingFont=OverlayStyle.Create(styleFontFamily,styleBodyPixels*scale,FontStyle.Bold,out resolved);
+      titleFont=OverlayStyle.Create(styleFontFamily,styleTitlePixels*scale,FontStyle.Bold,out resolved);
+      footerFont=OverlayStyle.Create(styleFontFamily,11.5f*scale,FontStyle.Regular,out resolved);
+      FontDescription=resolved+" "+FormatSize(styleTitlePixels)+"/"+FormatSize(styleBodyPixels);
     }
+    static string FormatSize(float pixels){return pixels.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture);}
     void RefreshDpi(){
       float next=1;try{next=Native.GetDpiForWindow(Handle)/96f;}catch(EntryPointNotFoundException){}
       if(testScale>0)next=testScale;next=Math.Max(1,Math.Min(4,next));
@@ -831,10 +941,13 @@ namespace DshTakeover {
     internal bool ClickThrough {get{return (Native.GetWindowLong(Handle,-20)&0x08000020)==0x08000020;}}
     static string TextValue(Dictionary<string,object> data,string key){object v;if(data==null||!data.TryGetValue(key,out v)||v==null)return "";string s=Convert.ToString(v);return s.Length>1200?s.Substring(s.Length-1200):s;}
     static int NumberValue(Dictionary<string,object> data,string key,int fallback){object v;return data!=null&&data.TryGetValue(key,out v)?Convert.ToInt32(v):fallback;}
+    static double NumberDouble(Dictionary<string,object> data,string key,double fallback){object v;return data!=null&&data.TryGetValue(key,out v)&&v!=null?Convert.ToDouble(v,System.Globalization.CultureInfo.InvariantCulture):fallback;}
     internal void Configure(Dictionary<string,object> settings,bool visible){
       int width=Math.Max(240,Math.Min(1600,NumberValue(settings,"progressOverlayWidth",360))),height=Math.Max(160,Math.Min(1600,NumberValue(settings,"progressOverlayHeight",240)));
       int x=NumberValue(settings,"progressOverlayX",80),y=NumberValue(settings,"progressOverlayY",80),opacity=NumberValue(settings,"progressOverlayOpacity",60);
       string position=TextValue(settings,"progressOverlayPosition");if(position=="")position="top-right";
+      double titleSize=NumberDouble(settings,"progressOverlayTitleSize",14),bodySize=NumberDouble(settings,"progressOverlayBodySize",14.667);
+      string family=TextValue(settings,"progressOverlayFontFamily"),bgText=TextValue(settings,"progressOverlayBg"),borderText=TextValue(settings,"progressOverlayBorder"),textText=TextValue(settings,"progressOverlayText"),mutedText=TextValue(settings,"progressOverlayMuted"),accentText=TextValue(settings,"progressOverlayAccent");
       object v;bool locked=settings==null||!settings.TryGetValue("progressOverlayLocked",out v)||Convert.ToBoolean(v);
       string signature=width+","+height+","+x+","+y+","+position;
       baseline=new Dictionary<string,object>{{"progressOverlayWidth",width},{"progressOverlayHeight",height},{"progressOverlayX",x},{"progressOverlayY",y},{"progressOverlayPosition",position},{"progressOverlayLocked",locked}};
@@ -849,7 +962,17 @@ namespace DshTakeover {
         } else {var area=Screen.PrimaryScreen.WorkingArea;if(position!="custom"){x=position.EndsWith("right")?area.Right-width-20:area.Left+20;y=position.StartsWith("bottom")?area.Bottom-height-20:area.Top+70;}var next=new Rectangle(x,y,width,height);if(Bounds!=next)Bounds=next;geometry=signature;}
       }
       if(!configured||configuredLocked!=locked){SetLocked(locked,false);configuredLocked=locked;}
-      configured=true;remoteVisible=visible;BackgroundOpacity=Math.Max(.2,Math.Min(1,opacity/100.0));
+      configured=true;remoteVisible=visible;
+      // 整窗透明度：20-100 的 appearance 值映射到窗口 alpha，在 Present 的 BLENDFUNCTION 里应用。
+      WindowOpacity=Math.Max(.2,Math.Min(1,opacity/100.0));
+      styleBackground=OverlayStyle.Color(bgText,Color.FromArgb(153,25,29,38));
+      styleBorder=OverlayStyle.Color(borderText,Color.FromArgb(140,117,161,218));
+      styleText=OverlayStyle.Color(textText,Color.FromArgb(255,246,247,250));
+      styleMuted=OverlayStyle.Color(mutedText,Color.FromArgb(245,185,198,216));
+      styleAccent=OverlayStyle.Color(accentText,Color.FromArgb(255,91,143,239));
+      bool fontsChanged=styleFontFamily!=family||Math.Abs(styleTitlePixels-(float)titleSize)>.01||Math.Abs(styleBodyPixels-(float)bodySize)>.01;
+      styleFontFamily=family;styleTitlePixels=(float)titleSize;styleBodyPixels=(float)bodySize;
+      if(fontsChanged){SetFonts(scale);LayoutBody();}
       if(IsHandleCreated){Native.ApplyDisplayAffinity(this,visible);RefreshDpi();}Present();
     }
     internal bool IsPreview {get{return previewUnlocked;}}
@@ -1054,9 +1177,9 @@ namespace DshTakeover {
     // an open one (click to lock) with Close beside it while unlocked.
     void DrawButtons(Graphics g,Pen closePen){
       float cx=Width-scale*19,cy=scale*18,r=scale*12;var disc=new RectangleF(cx-r,cy-r,2*r,2*r);
-      using(var brush=new SolidBrush(Color.FromArgb(Locked?(hoverFraction>0?76:34):52,220,229,242)))g.FillEllipse(brush,disc);
-      if(Locked&&hoverFraction>0)using(var ring=new Pen(Color.FromArgb(245,122,180,255),Math.Max(1.5f,scale*2))){g.DrawArc(ring,disc.X+scale,disc.Y+scale,disc.Width-2*scale,disc.Height-2*scale,-90,360*hoverFraction);}
-      Color ink=Locked?Color.FromArgb(220,196,208,224):Color.FromArgb(245,238,242,248);
+      using(var brush=new SolidBrush(OverlayStyle.WithAlpha(styleAccent,Locked?(hoverFraction>0?76:34):52)))g.FillEllipse(brush,disc);
+      if(Locked&&hoverFraction>0)using(var ring=new Pen(OverlayStyle.WithAlpha(styleAccent,245),Math.Max(1.5f,scale*2))){g.DrawArc(ring,disc.X+scale,disc.Y+scale,disc.Width-2*scale,disc.Height-2*scale,-90,360*hoverFraction);}
+      Color ink=Locked?OverlayStyle.WithAlpha(styleMuted,220):OverlayStyle.WithAlpha(styleText,245);
       float lift=Locked?0:scale*3;
       using(var pen=new Pen(ink,Math.Max(1f,scale*1.3f)))using(var fill=new SolidBrush(ink)){
         g.DrawArc(pen,cx-scale*3.5f,cy-scale*7-lift,scale*7,scale*9,180,180);
@@ -1069,8 +1192,8 @@ namespace DshTakeover {
       var image=new Bitmap(Math.Max(1,Width),Math.Max(1,Height),PixelFormat.Format32bppPArgb);
       using(var g=Graphics.FromImage(image)){
         g.Clear(Color.Transparent);g.SmoothingMode=SmoothingMode.AntiAlias;g.TextRenderingHint=TextRenderingHint.AntiAliasGridFit;
-        using(var shape=Frame.Rounded(new RectangleF(.5f,.5f,Width-1,Height-1),Px(8)))using(var bg=new SolidBrush(Color.FromArgb((int)Math.Round(BackgroundOpacity*255),25,29,38)))using(var border=new Pen(Color.FromArgb(140,117,161,218),1)){g.FillPath(bg,shape);g.DrawPath(border,shape);}
-        using(var fg=new SolidBrush(Color.FromArgb(255,246,247,250)))using(var muted=new SolidBrush(Color.FromArgb(245,185,198,216)))using(var shadow=new SolidBrush(Color.FromArgb(150,0,0,0)))using(var pen=new Pen(Color.FromArgb(235,203,216,232),Px(1.3f)))using(var format=(StringFormat)StringFormat.GenericTypographic.Clone()){
+        using(var shape=Frame.Rounded(new RectangleF(.5f,.5f,Width-1,Height-1),Px(8)))using(var bg=new SolidBrush(styleBackground))using(var border=new Pen(styleBorder,1)){g.FillPath(bg,shape);g.DrawPath(border,shape);}
+        using(var fg=new SolidBrush(styleText))using(var muted=new SolidBrush(styleMuted))using(var shadow=new SolidBrush(Color.FromArgb(150,0,0,0)))using(var pen=new Pen(OverlayStyle.WithAlpha(styleText,235),Px(1.3f)))using(var format=(StringFormat)StringFormat.GenericTypographic.Clone()){
           format.FormatFlags|=StringFormatFlags.NoWrap|StringFormatFlags.MeasureTrailingSpaces;format.Trimming=StringTrimming.EllipsisCharacter;
           float halo=Math.Max(1f,scale*.75f);
           Shadowed(g,header,titleFont,fg,shadow,new RectangleF(Px(12),Px(10),Math.Max(10,Width-Px(Locked?52:68)),Px(24)),format,halo);
@@ -1083,17 +1206,17 @@ namespace DshTakeover {
         }
         // The translucent scrollbar appears only when there is more to read.
         if(MaxScroll>0){
-          using(var shape=Frame.Rounded(track,Math.Max(1,Px(3))))using(var brush=new SolidBrush(Color.FromArgb(32,220,229,242)))g.FillPath(brush,shape);
-          using(var shape=Frame.Rounded(thumb,Math.Max(1,Px(3))))using(var brush=new SolidBrush(Color.FromArgb(112,220,229,242)))g.FillPath(brush,shape);
+          using(var shape=Frame.Rounded(track,Math.Max(1,Px(3))))using(var brush=new SolidBrush(OverlayStyle.WithAlpha(styleMuted,32)))g.FillPath(brush,shape);
+          using(var shape=Frame.Rounded(thumb,Math.Max(1,Px(3))))using(var brush=new SolidBrush(OverlayStyle.WithAlpha(styleMuted,112)))g.FillPath(brush,shape);
         }
       }return image;
     }
     void Present(){
       if(presenting||!IsHandleCreated||IsDisposed||Width<1||Height<1)return;presenting=true;
-      try{using(var image=DrawSurface()){IntPtr dc=Native.CreateCompatibleDC(IntPtr.Zero),bitmap=image.GetHbitmap(Color.FromArgb(0)),previous=Native.SelectObject(dc,bitmap);try{var dest=new Native.Point(Left,Top);var origin=new Native.Point(0,0);var size=new Native.Size(Width,Height);var blend=new Native.Blend{op=0,flags=0,alpha=255,format=1};if(!Native.UpdateLayeredWindow(Handle,IntPtr.Zero,ref dest,ref size,dc,ref origin,0,ref blend,2))throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Could not present progress overlay");paints++;}finally{Native.SelectObject(dc,previous);Native.DeleteObject(bitmap);Native.DeleteDC(dc);}}}finally{presenting=false;}
+      try{using(var image=DrawSurface()){IntPtr dc=Native.CreateCompatibleDC(IntPtr.Zero),bitmap=image.GetHbitmap(Color.FromArgb(0)),previous=Native.SelectObject(dc,bitmap);try{var dest=new Native.Point(Left,Top);var origin=new Native.Point(0,0);var size=new Native.Size(Width,Height);var blend=new Native.Blend{op=0,flags=0,alpha=(byte)Math.Max(0,Math.Min(255,Math.Round(WindowOpacity*255))),format=1};if(!Native.UpdateLayeredWindow(Handle,IntPtr.Zero,ref dest,ref size,dc,ref origin,0,ref blend,2))throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Could not present progress overlay");paints++;}finally{Native.SelectObject(dc,previous);Native.DeleteObject(bitmap);Native.DeleteDC(dc);}}}finally{presenting=false;}
     }
     protected override void OnPaint(PaintEventArgs e){Present();}
-    internal object ReadingStatus(){return new {scrollbar=true,position=scrollY,maximum=Math.Max(0,TotalHeight-1),page=viewport.Height,atBottom=scrollY>=MaxScroll-2,following=followOutput,text=bodyText,lineHeight=LineHeight,emPixels=bodyFont.Size,viewport=new{x=viewport.X,y=viewport.Y,width=viewport.Width,height=viewport.Height},resizeRedraw=GetStyle(ControlStyles.ResizeRedraw),paints=paints,dpiScale=scale,textAlpha=255,backgroundAlpha=(int)Math.Round(BackgroundOpacity*255),scrollbarTrackAlpha=MaxScroll>0?32:0,scrollbarThumbAlpha=MaxScroll>0?112:0,thumb=new{x=thumb.X,y=thumb.Y,width=thumb.Width,height=thumb.Height},wrappedLines=lines.Count};}
+    internal object ReadingStatus(){return new {scrollbar=true,position=scrollY,maximum=Math.Max(0,TotalHeight-1),page=viewport.Height,atBottom=scrollY>=MaxScroll-2,following=followOutput,text=bodyText,lineHeight=LineHeight,emPixels=bodyFont.Size,viewport=new{x=viewport.X,y=viewport.Y,width=viewport.Width,height=viewport.Height},resizeRedraw=GetStyle(ControlStyles.ResizeRedraw),paints=paints,dpiScale=scale,textAlpha=255,backgroundAlpha=(int)Math.Round(styleBackground.A*WindowOpacity),windowOpacity=Math.Round(WindowOpacity,3),font=FontDescription,scrollbarTrackAlpha=MaxScroll>0?32:0,scrollbarThumbAlpha=MaxScroll>0?112:0,thumb=new{x=thumb.X,y=thumb.Y,width=thumb.Width,height=thumb.Height},wrappedLines=lines.Count};}
     internal void ScrollLines(int count){ScrollTo(scrollY+count*LineHeight);}
     internal void ScrollWheel(int delta){wheelRemainder+=delta;int notches=wheelRemainder/120;wheelRemainder%=120;if(notches!=0){int n=SystemInformation.MouseWheelScrollLines;ScrollTo(scrollY-notches*(n<0?viewport.Height:Math.Max(1,n)*LineHeight));}}
     internal int TestHitAt(int x,int y){return Native.SendMessage(Handle,0x0084,IntPtr.Zero,new IntPtr(((Top+y)&0xffff)<<16|((Left+x)&0xffff))).ToInt32();}
@@ -1112,6 +1235,494 @@ namespace DshTakeover {
   }
 
 
+  // 审计窗：读服务器写的 audit-live.tsv，展示每一步操作、原因和截图缩略图。
+  // 它跟随思考窗（默认贴在左侧），不进任务栏、不抢焦点；锁定后点击穿透，并且始终从截屏里排除。
+  internal sealed class AuditFrame : Form {
+    internal sealed class Row {
+      internal string at="",action="",app="",detail="",reason="",shot="";
+      internal bool ok=true;
+    }
+    sealed class Block {
+      internal Row row;
+      internal string[] reason=new string[0];
+      internal Bitmap thumb;
+      internal int thumbW,thumbH,height;
+      internal float textWidth,lineH;
+    }
+    static readonly Color Warn=Color.FromArgb(255,235,104,90);
+    readonly List<Row> rows=new List<Row>();
+    readonly List<Block> blocks=new List<Block>();
+    readonly Dictionary<string,Bitmap> thumbCache=new Dictionary<string,Bitmap>(StringComparer.OrdinalIgnoreCase);
+    readonly List<string> thumbOrder=new List<string>();
+    Font bodyFont,bodyBold,titleFont,timeFont;
+    internal string FontDescription="Microsoft YaHei UI 13/12.5";
+    Color styleBackground=Color.FromArgb(235,11,13,18);
+    Color styleBorder=Color.FromArgb(255,42,49,64);
+    Color styleText=Color.FromArgb(255,230,234,242);
+    Color styleMuted=Color.FromArgb(255,138,147,163);
+    Color styleAccent=Color.FromArgb(255,74,222,128);
+    Color styleReason=Color.FromArgb(255,199,178,107);
+    Color styleShot=Color.FromArgb(255,91,143,239);
+    string styleFontFamily="";
+    float styleTitlePixels=13f,styleBodyPixels=12.5f;
+    internal double WindowOpacity=.88;
+    internal bool Locked=true;
+    internal bool CaptureExcluded;
+    int maxRows=12;
+    bool showTime=true,showReason=true,showThumb=false;
+    string position="left-of-thought";
+    string dataPath="";
+    int gap=6,customX,customY;
+    bool hasCustom;
+    long dataStamp=-1;
+    bool dataExists;
+    DateTime nextPoll=DateTime.MinValue;
+    bool presenting;
+    float scale=1;
+    Form anchor;
+
+    internal int MaxRows{get{return maxRows;}}
+    internal int LineCount{get{return rows.Count;}}
+    internal string DataPath{get{return dataPath;}}
+
+    internal AuditFrame() {
+      AutoScaleMode=AutoScaleMode.None;
+      FormBorderStyle=FormBorderStyle.None;
+      ShowInTaskbar=false;
+      TopMost=true;
+      StartPosition=FormStartPosition.Manual;
+      MinimumSize=new Size(200,120);
+      MaximumSize=new Size(1600,1600);
+      SetStyle(ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.ResizeRedraw,true);
+      SetFonts();
+      Width=420;
+      Height=340;
+    }
+    protected override bool ShowWithoutActivation{get{return true;}}
+    protected override CreateParams CreateParams {
+      get {
+        CreateParams cp=base.CreateParams;
+        cp.ExStyle|=0x80000|0x80|0x08000000;
+        if(Locked)cp.ExStyle|=0x20;
+        return cp;
+      }
+    }
+    protected override void OnHandleCreated(EventArgs e) {
+      base.OnHandleCreated(e);
+      RefreshDpi();
+      SetCaptureExcluded();
+    }
+    protected override void OnShown(EventArgs e) {
+      base.OnShown(e);
+      SetCaptureExcluded();
+      Present();
+    }
+    protected override void OnPaint(PaintEventArgs e) { Present(); }
+    protected override void OnResize(EventArgs e) { base.OnResize(e); if(IsHandleCreated)Present(); }
+    protected override void WndProc(ref Message m) {
+      if(m.Msg==0x02e0){base.WndProc(ref m);RefreshDpi();Present();return;}
+      base.WndProc(ref m);
+    }
+    protected override void Dispose(bool disposing) {
+      if(disposing){
+        DisposeFonts();
+        foreach(var key in thumbOrder){Bitmap image;if(thumbCache.TryGetValue(key,out image)&&image!=null)image.Dispose();}
+        thumbCache.Clear();thumbOrder.Clear();
+      }
+      base.Dispose(disposing);
+    }
+    void DisposeFonts() {
+      if(bodyFont!=null)bodyFont.Dispose();if(bodyBold!=null)bodyBold.Dispose();
+      if(titleFont!=null)titleFont.Dispose();if(timeFont!=null)timeFont.Dispose();
+      bodyFont=null;bodyBold=null;titleFont=null;timeFont=null;
+    }
+    void SetFonts() {
+      DisposeFonts();
+      string resolved="Microsoft YaHei UI";
+      // 字号是 96-DPI 像素，再乘窗口 DPI 缩放；家族按 OverlayStyle 的回退链解析。
+      bodyFont=OverlayStyle.Create(styleFontFamily,styleBodyPixels*scale,FontStyle.Regular,out resolved);
+      bodyBold=OverlayStyle.Create(styleFontFamily,styleBodyPixels*scale,FontStyle.Bold,out resolved);
+      titleFont=OverlayStyle.Create(styleFontFamily,styleTitlePixels*scale,FontStyle.Bold,out resolved);
+      timeFont=OverlayStyle.Create(styleFontFamily,Math.Max(8f,styleBodyPixels*scale*.88f),FontStyle.Regular,out resolved);
+      FontDescription=resolved+" "+FormatSize(styleTitlePixels)+"/"+FormatSize(styleBodyPixels);
+    }
+    void RefreshDpi() {
+      if(!IsHandleCreated)return;
+      float next=Native.GetDpiForWindow(Handle)/96f;
+      next=Math.Max(1f,Math.Min(4f,next));
+      if(Math.Abs(next-scale)>.01f){scale=next;SetFonts();Present();}
+    }
+    void SetCaptureExcluded() {
+      if(!IsHandleCreated)return;
+      CaptureExcluded=Native.ApplyDisplayAffinity(this,false);
+    }
+    void ApplyLock(bool locked) {
+      Locked=locked;
+      if(IsHandleCreated){
+        int style=Native.GetWindowLong(Handle,-20);
+        Native.SetWindowLong(Handle,-20,locked?style|0x20:style&~0x20);
+        Native.SetWindowPos(Handle,IntPtr.Zero,0,0,0,0,0x37);
+      }
+    }
+    internal void Configure(Dictionary<string,object> settings) {
+      int width=ClampInt(NumberValue(settings,"auditOverlayWidth",420),200,1600);
+      int height=ClampInt(NumberValue(settings,"auditOverlayHeight",340),120,1600);
+      double opacity=NumberDouble(settings,"auditOverlayOpacity",88);
+      WindowOpacity=Math.Max(.2,Math.Min(1,opacity/100.0));
+      bool locked=BoolValue(settings,"auditOverlayLocked",true);
+      string nextPosition=TextValue(settings,"auditOverlayPosition");
+      if(nextPosition=="")nextPosition="left-of-thought";
+      int nextGap=ClampInt(NumberValue(settings,"auditOverlayGap",6),0,80);
+      int nextRows=ClampInt(NumberValue(settings,"auditOverlayRows",12),1,40);
+      bool nextShowTime=BoolValue(settings,"auditOverlayShowTime",true);
+      bool nextShowReason=BoolValue(settings,"auditOverlayShowReason",true);
+      bool nextShowThumb=BoolValue(settings,"auditOverlayShowThumb",false);
+      float nextTitle=ClampFloat(NumberDouble(settings,"auditOverlayTitleSize",13),9,28);
+      float nextBody=ClampFloat(NumberDouble(settings,"auditOverlayBodySize",12.5),8,24);
+      string family=TextValue(settings,"auditOverlayFontFamily");
+      Color nextBackground=OverlayStyle.Color(TextValue(settings,"auditOverlayBg"),styleBackground);
+      Color nextBorder=OverlayStyle.Color(TextValue(settings,"auditOverlayBorder"),styleBorder);
+      Color nextText=OverlayStyle.Color(TextValue(settings,"auditOverlayText"),styleText);
+      Color nextMuted=OverlayStyle.Color(TextValue(settings,"auditOverlayMuted"),styleMuted);
+      Color nextAccent=OverlayStyle.Color(TextValue(settings,"auditOverlayAccent"),styleAccent);
+      Color nextReason=OverlayStyle.Color(TextValue(settings,"auditOverlayReason"),styleReason);
+      Color nextShot=OverlayStyle.Color(TextValue(settings,"auditOverlayShot"),styleShot);
+      double rawX,rawY;
+      bool hasX=TryNumber(settings,"auditOverlayX",out rawX);
+      bool hasY=TryNumber(settings,"auditOverlayY",out rawY);
+      hasCustom=hasX&&hasY;
+      if(hasCustom){customX=(int)Math.Round(rawX);customY=(int)Math.Round(rawY);}
+      bool fontsChanged=family!=styleFontFamily||Math.Abs(nextTitle-styleTitlePixels)>.01f||Math.Abs(nextBody-styleBodyPixels)>.01f;
+      styleFontFamily=family;styleTitlePixels=nextTitle;styleBodyPixels=nextBody;
+      styleBackground=nextBackground;styleBorder=nextBorder;styleText=nextText;styleMuted=nextMuted;
+      styleAccent=nextAccent;styleReason=nextReason;styleShot=nextShot;
+      if(nextRows!=maxRows)dataStamp=-1;
+      maxRows=nextRows;showTime=nextShowTime;showReason=nextShowReason;showThumb=nextShowThumb;
+      position=nextPosition;gap=nextGap;
+      string nextData=TextValue(settings,"auditOverlayData");
+      if(nextData!=dataPath){ClearThumbs();dataPath=nextData;dataStamp=-1;dataExists=false;}
+      if(fontsChanged)SetFonts();
+      ApplyLock(locked);
+      if(Width!=width)Width=width;
+      if(Height!=height)Height=height;
+      Place(anchor);
+      if(IsHandleCreated)Present();
+      Poll();
+    }
+    internal void Follow(Form thought) {
+      if(thought==null||thought.IsDisposed)return;
+      anchor=thought;
+      Place(thought);
+    }
+    void Place(Form thought) {
+      int x=Left,y=Top;
+      Rectangle area;
+      if(position=="custom"&&hasCustom){
+        area=Screen.FromPoint(new Point(customX,customY)).WorkingArea;
+        x=ClampInt(customX,area.Left,Math.Max(area.Left,area.Right-Width));
+        y=ClampInt(customY,area.Top,Math.Max(area.Top,area.Bottom-Height));
+      }else if(position=="left-of-thought"){
+        if(thought==null||thought.IsDisposed)return;
+        x=thought.Left-Width-gap;y=thought.Top;
+      }else{
+        bool useThought=thought!=null&&!thought.IsDisposed;
+        area=useThought?Screen.FromRectangle(thought.Bounds).WorkingArea:Screen.PrimaryScreen.WorkingArea;
+        bool right=position=="top-right"||position=="bottom-right";
+        bool bottom=position=="bottom-left"||position=="bottom-right";
+        x=right?area.Right-Width-16:area.Left+16;
+        y=bottom?area.Bottom-Height-16:area.Top+16;
+        x=ClampInt(x,area.Left,Math.Max(area.Left,area.Right-Width));
+        y=ClampInt(y,area.Top,Math.Max(area.Top,area.Bottom-Height));
+      }
+      var next=new Rectangle(x,y,Width,Height);
+      if(Bounds!=next){Bounds=next;if(IsHandleCreated)Present();}
+    }
+    internal void Poll(bool force=false) {
+      if(!IsHandleCreated)return;
+      if(!force&&DateTime.UtcNow<nextPoll)return;
+      nextPoll=DateTime.UtcNow.AddMilliseconds(500);
+      if(String.IsNullOrEmpty(dataPath)){
+        if(rows.Count>0){rows.Clear();ClearBlocks();Present();}
+        return;
+      }
+      bool exists=false;long stamp=-1;
+      try{if(File.Exists(dataPath)){exists=true;stamp=File.GetLastWriteTimeUtc(dataPath).Ticks;}}catch(Exception){}
+      if(!exists){
+        if(rows.Count>0){rows.Clear();ClearBlocks();Present();}
+        dataExists=false;dataStamp=-1;
+        return;
+      }
+      if(!force&&exists==dataExists&&stamp==dataStamp)return;
+      try {
+        string[] raw=File.ReadAllLines(dataPath,Encoding.UTF8);
+        var parsed=new List<Row>();
+        for(int i=0;i<raw.Length;i++){
+          string line=raw[i];
+          if(String.IsNullOrWhiteSpace(line))continue;
+          string[] cells=line.Split('\t');
+          var row=new Row();
+          row.at=Cell(cells,0);row.ok=Cell(cells,1)!="0";row.action=Cell(cells,2);
+          row.app=Cell(cells,3);row.detail=Cell(cells,4);row.reason=Cell(cells,5);row.shot=Cell(cells,6);
+          if(row.action==""&&row.detail=="")continue;
+          parsed.Add(row);
+        }
+        if(parsed.Count>maxRows)parsed=parsed.GetRange(parsed.Count-maxRows,maxRows);
+        rows.Clear();rows.AddRange(parsed);
+        dataExists=true;dataStamp=stamp;
+        ClearBlocks();Present();
+      }catch(Exception){dataStamp=-1;}
+    }
+    void ClearBlocks(){
+      blocks.Clear();
+      // 只在没有绘制引用时回收缩略图缓存，避免当前帧的 Block 指向已释放的 Bitmap。
+      while(thumbOrder.Count>64){
+        string oldest=thumbOrder[0];thumbOrder.RemoveAt(0);
+        Bitmap image;if(thumbCache.TryGetValue(oldest,out image)){thumbCache.Remove(oldest);if(image!=null)image.Dispose();}
+      }
+    }
+    void ClearThumbs() {
+      foreach(var key in thumbOrder){Bitmap image;if(thumbCache.TryGetValue(key,out image)&&image!=null)image.Dispose();}
+      thumbCache.Clear();thumbOrder.Clear();
+    }
+    Bitmap DrawSurface() {
+      var image=new Bitmap(Math.Max(1,Width),Math.Max(1,Height),PixelFormat.Format32bppPArgb);
+      using(var g=Graphics.FromImage(image)){
+        g.Clear(Color.Transparent);
+        g.SmoothingMode=SmoothingMode.AntiAlias;
+        g.TextRenderingHint=TextRenderingHint.AntiAliasGridFit;
+        using(var shape=Frame.Rounded(new RectangleF(.5f,.5f,Width-1,Height-1),8f))
+        using(var background=new SolidBrush(styleBackground))
+        using(var border=new Pen(styleBorder,1)){g.FillPath(background,shape);g.DrawPath(border,shape);}
+        float pad=10f;
+        float titleTop=9f;
+        float titleLine=Math.Max(22f,(float)Math.Ceiling(titleFont.GetHeight()*1.1));
+        using(var fg=new SolidBrush(styleText))
+        using(var muted=new SolidBrush(styleMuted))
+        using(var far=MakeFarFormat()){
+          g.DrawString("DSH 本地审计",titleFont,fg,new PointF(pad,titleTop));
+          string count=rows.Count+" 条";
+          g.DrawString(count,timeFont,muted,new RectangleF(Width-pad-100f,titleTop+2f,100f,titleLine),far);
+          float separator=titleTop+titleLine+3f;
+          using(var pen=new Pen(OverlayStyle.WithAlpha(styleBorder,140),1f))g.DrawLine(pen,pad,separator,Width-pad,separator);
+          float top=separator+6f;
+          float bottom=Height-8f;
+          float available=Math.Max(10f,bottom-top);
+          if(rows.Count==0){
+            using(var center=MakeCenterFormat())g.DrawString("暂无操作记录",bodyFont,muted,new RectangleF(pad,top,Width-2*pad,available),center);
+          }else{
+            blocks.Clear();
+            float used=0f;
+            float contentWidth=Width-2*pad;
+            for(int i=rows.Count-1;i>=0&&blocks.Count<maxRows;i--){
+              Block block=BuildBlock(g,rows[i],contentWidth);
+              if(block==null)continue;
+              if(used+block.height>available){
+                if(blocks.Count==0){
+                  block.height=(int)Math.Floor(available);
+                  if(block.height>8){blocks.Insert(0,block);used+=block.height;}
+                }
+                break;
+              }
+              used+=block.height;
+              blocks.Insert(0,block);
+            }
+            float y=bottom-used;
+            for(int i=0;i<blocks.Count;i++){DrawBlock(g,blocks[i],pad,y,contentWidth);y+=blocks[i].height;}
+            if(blocks.Count==0)using(var center=MakeCenterFormat())g.DrawString("暂无操作记录",bodyFont,muted,new RectangleF(pad,top,contentWidth,available),center);
+          }
+        }
+      }
+      return image;
+    }
+    Block BuildBlock(Graphics g,Row row,float contentWidth) {
+      var block=new Block();
+      block.row=row;
+      float line=Math.Max(13f,(float)Math.Ceiling(bodyFont.GetHeight()*1.05));
+      block.lineH=line;
+      int thumbWidth=0,thumbHeight=0;
+      Bitmap thumb=LoadThumb(row.shot,Math.Max(24,(int)Math.Min(72f,contentWidth*.35f)),44,out thumbWidth,out thumbHeight);
+      block.thumb=thumb;block.thumbW=thumbWidth;block.thumbH=thumbHeight;
+      float textWidth=contentWidth-(thumb!=null?thumbWidth+8f:0f);
+      block.textWidth=Math.Max(60f,textWidth);
+      block.reason=showReason?Wrap(g,row.reason,bodyFont,Math.Max(30f,block.textWidth-16f),2):new string[0];
+      float height=line+block.reason.Length*line+6f;
+      if(thumbHeight+4f>height)height=thumbHeight+4f;
+      block.height=Math.Max(1,(int)Math.Ceiling(height));
+      return block;
+    }
+    void DrawBlock(Graphics g,Block block,float x,float y,float width) {
+      Row row=block.row;
+      float line=block.lineH;
+      float textWidth=block.textWidth;
+      using(var dot=new SolidBrush(row.ok?styleAccent:Warn))g.FillEllipse(dot,x+3f,y+line*.42f,5f,5f);
+      float tx=x+14f;
+      using(var fg=new SolidBrush(OverlayStyle.WithAlpha(styleText,238)))
+      using(var muted=new SolidBrush(OverlayStyle.WithAlpha(styleMuted,215)))
+      using(var gold=new SolidBrush(styleReason))
+      using(var warn=new SolidBrush(Warn))
+      using(var far=MakeFarFormat()){
+        float appWidth=0f;
+        if(!String.IsNullOrEmpty(row.app))appWidth=Math.Min(textWidth*.42f,g.MeasureString(row.app,timeFont).Width+4f);
+        float budget=Math.Max(24f,textWidth-(tx-x)-appWidth-4f);
+        float timeWidth=0f;
+        if(showTime&&!String.IsNullOrEmpty(row.at)){
+          float measured=g.MeasureString(row.at+"  ",timeFont).Width;
+          if(measured<budget*.55f){timeWidth=measured;g.DrawString(row.at,timeFont,muted,new PointF(tx,y+1f));}
+        }
+        float actionX=tx+timeWidth;
+        string action=Fit(g,String.IsNullOrEmpty(row.action)?"操作":row.action,bodyBold,Math.Max(24f,budget-timeWidth));
+        g.DrawString(action,bodyBold,fg,new PointF(actionX,y));
+        float used=timeWidth+g.MeasureString(action,bodyBold).Width+6f;
+        if(!String.IsNullOrEmpty(row.detail)){
+          float room=budget-used;
+          if(room>16f){
+            string detail=Fit(g,row.detail,bodyFont,room);
+            g.DrawString(detail,bodyFont,muted,new PointF(tx+used,y+(line-bodyFont.GetHeight())*.5f));
+          }
+        }
+        float appRight=x+textWidth;
+        if(!String.IsNullOrEmpty(row.app))g.DrawString(Fit(g,row.app,timeFont,appWidth),timeFont,muted,new RectangleF(appRight-appWidth,y+1f,appWidth,line),far);
+        float reasonY=y+line;
+        for(int i=0;i<block.reason.Length;i++){
+          g.DrawString((i==0?"· ":"  ")+block.reason[i],bodyFont,row.ok?gold:warn,new PointF(tx,reasonY));
+          reasonY+=line;
+        }
+        if(block.thumb!=null){
+          var rect=new RectangleF(x+width-block.thumbW,y+1f,block.thumbW,block.thumbH);
+          g.DrawImage(block.thumb,rect);
+          using(var edge=new Pen(OverlayStyle.WithAlpha(styleShot,120),1f))g.DrawRectangle(edge,rect.X,rect.Y,rect.Width,rect.Height);
+        }
+      }
+      using(var separator=new Pen(OverlayStyle.WithAlpha(styleBorder,80),1f)){
+        float sy=y+block.height-1f;
+        g.DrawLine(separator,x,sy,x+width,sy);
+      }
+    }
+    Bitmap LoadThumb(string shot,int maxWidth,int maxHeight,out int thumbWidth,out int thumbHeight) {
+      thumbWidth=0;thumbHeight=0;
+      if(!showThumb||String.IsNullOrEmpty(shot)||String.IsNullOrEmpty(dataPath))return null;
+      string path=shot;
+      if(!Path.IsPathRooted(path)){
+        string directory=Path.GetDirectoryName(dataPath);
+        if(String.IsNullOrEmpty(directory))return null;
+        path=Path.Combine(directory,path);
+      }
+      Bitmap cached;
+      if(thumbCache.TryGetValue(path,out cached)){
+        if(cached!=null&&cached.Width>0){thumbWidth=cached.Width;thumbHeight=cached.Height;return cached;}
+        return null;
+      }
+      try {
+        if(!File.Exists(path))return null;
+        using(var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite))
+        using(var source=Image.FromStream(stream)){
+          if(source.Width<1||source.Height<1)return null;
+          float scale=Math.Min((float)maxWidth/source.Width,(float)maxHeight/source.Height);
+          if(scale>1f)scale=1f;
+          int width=Math.Max(1,(int)Math.Round(source.Width*scale));
+          int height=Math.Max(1,(int)Math.Round(source.Height*scale));
+          var copy=new Bitmap(width,height,PixelFormat.Format32bppPArgb);
+          using(var graphics=Graphics.FromImage(copy)){
+            graphics.InterpolationMode=InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode=PixelOffsetMode.HighQuality;
+            graphics.DrawImage(source,0,0,width,height);
+          }
+          thumbCache[path]=copy;thumbOrder.Add(path);
+          thumbWidth=width;thumbHeight=height;
+          return copy;
+        }
+      }catch(Exception){return null;}
+    }
+    void Present() {
+      if(presenting||!IsHandleCreated||IsDisposed||Width<1||Height<1)return;
+      presenting=true;
+      try{
+        using(var image=DrawSurface()){
+          IntPtr dc=Native.CreateCompatibleDC(IntPtr.Zero),bitmap=image.GetHbitmap(Color.FromArgb(0)),previous=Native.SelectObject(dc,bitmap);
+          try{
+            var dest=new Native.Point(Left,Top);
+            var origin=new Native.Point(0,0);
+            var size=new Native.Size(Width,Height);
+            var blend=new Native.Blend{op=0,flags=0,alpha=(byte)Math.Max(0,Math.Min(255,Math.Round(WindowOpacity*255))),format=1};
+            if(!Native.UpdateLayeredWindow(Handle,IntPtr.Zero,ref dest,ref size,dc,ref origin,0,ref blend,2))throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Could not present audit overlay");
+          }finally{Native.SelectObject(dc,previous);Native.DeleteObject(bitmap);Native.DeleteDC(dc);}
+        }
+      }finally{presenting=false;}
+    }
+    static StringFormat MakeFarFormat() {
+      var format=(StringFormat)StringFormat.GenericTypographic.Clone();
+      format.FormatFlags|=StringFormatFlags.NoWrap|StringFormatFlags.MeasureTrailingSpaces;
+      format.Trimming=StringTrimming.EllipsisCharacter;
+      format.Alignment=StringAlignment.Far;
+      format.LineAlignment=StringAlignment.Near;
+      return format;
+    }
+    static StringFormat MakeCenterFormat() {
+      var format=(StringFormat)StringFormat.GenericTypographic.Clone();
+      format.Alignment=StringAlignment.Center;
+      format.LineAlignment=StringAlignment.Center;
+      return format;
+    }
+    static string Fit(Graphics g,string text,Font font,float width) {
+      if(String.IsNullOrEmpty(text))return "";
+      if(width<4f)return "…";
+      if(g.MeasureString(text,font).Width<=width)return text;
+      int length=text.Length;
+      while(length>1&&g.MeasureString(text.Substring(0,length)+"…",font).Width>width)length--;
+      return text.Substring(0,length)+"…";
+    }
+    static string[] Wrap(Graphics g,string text,Font font,float width,int maxLines) {
+      var result=new List<string>();
+      if(String.IsNullOrEmpty(text)||maxLines<1||width<=8f)return result.ToArray();
+      int start=0;
+      while(start<text.Length&&result.Count<maxLines){
+        string rest=text.Substring(start);
+        if(g.MeasureString(rest,font).Width<=width){result.Add(rest);break;}
+        int low=1,high=rest.Length;
+        while(low<high){
+          int middle=(low+high+1)/2;
+          if(g.MeasureString(rest.Substring(0,middle),font).Width<=width)low=middle;else high=middle-1;
+        }
+        int take=Math.Max(1,low);
+        if(result.Count==maxLines-1){result.Add(Fit(g,rest,font,width));break;}
+        result.Add(rest.Substring(0,take));
+        start+=take;
+      }
+      return result.ToArray();
+    }
+    static string Cell(string[] cells,int index) { return index>=0&&index<cells.Length?cells[index].Trim():""; }
+    static string TextValue(Dictionary<string,object> data,string key) {
+      object value;
+      if(data==null||!data.TryGetValue(key,out value)||value==null)return "";
+      string text=Convert.ToString(value);
+      return text.Length>1200?text.Substring(text.Length-1200):text;
+    }
+    static bool BoolValue(Dictionary<string,object> data,string key,bool fallback) {
+      if(data==null)return fallback;
+      object value;
+      if(!data.TryGetValue(key,out value)||value==null)return fallback;
+      if(value is bool)return (bool)value;
+      try{return Convert.ToBoolean(value);}catch(Exception){return fallback;}
+    }
+    static bool TryNumber(Dictionary<string,object> data,string key,out double value) {
+      value=0;
+      if(data==null)return false;
+      object raw;
+      if(!data.TryGetValue(key,out raw)||raw==null)return false;
+      try{value=Convert.ToDouble(raw,System.Globalization.CultureInfo.InvariantCulture);return true;}catch(Exception){return false;}
+    }
+    static int NumberValue(Dictionary<string,object> data,string key,int fallback) {
+      double value;
+      return TryNumber(data,key,out value)?(int)Math.Round(value):fallback;
+    }
+    static double NumberDouble(Dictionary<string,object> data,string key,double fallback) {
+      double value;
+      return TryNumber(data,key,out value)?value:fallback;
+    }
+    static int ClampInt(int value,int min,int max) { return Math.Max(min,Math.Min(max,value)); }
+    static float ClampFloat(double value,float min,float max) { return (float)Math.Max(min,Math.Min(max,value)); }
+    static string FormatSize(float pixels) { return pixels.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture); }
+  }
   // A small cursor-following layer. The system cursor, theme and input state
   // remain owned by Windows; closing/crashing this process leaves no cursor changes.
   internal sealed class PointerFrame : Form {

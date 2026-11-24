@@ -2,6 +2,8 @@ import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { desktopKey, dragged, holdMs, IMAGE_EDGE, largest, NOTCHES, pressed, VK, windowsNamed, ZOOM_GROW, type DesktopInput, type Listed } from './desktop.ts';
+import { bannerText, readAppearance } from '../appearance.ts';
+import type { AuditSink } from '../audit.ts';
 import type { DesktopDriver } from './driver.ts';
 import { createRecording } from './recording.ts';
 import { createTurns, type DesktopResult } from './turns.ts';
@@ -26,10 +28,12 @@ const SCREEN_LINGER_MS = 30_000;
 export function createScreen(deps: {
   hands: Pick<DesktopDriver, 'call'>; eyes: Pick<DesktopDriver, 'call'>;
   companion?(): string; signFault?(text: string | undefined): void;
+  /** 审计：agent 在用户电脑上的每一步都记一条，给用户看的那个窗口读。 */
+  audit?: AuditSink;
   settleMs?: number; appearMs?: number; secondMs?: number; lingerMs?: number;
 }) {
   const settleMs = deps.settleMs ?? SETTLE_MS, appearMs = deps.appearMs ?? APPEAR_MS;
-  let view: View | undefined, shots = 0, front: string | undefined;
+  let view: View | undefined, shots = 0, front: string | undefined, frontInfo: { exe?: string; title?: string } | undefined, frontHwnd: number | undefined;
   const wrap = (driver: Pick<DesktopDriver, 'call'>) => (op: string, args: Record<string, unknown> = {}) => driver.call(op, args).catch((error: unknown) => {
     throw new Error(`没做成：${error instanceof Error ? error.message : String(error)}`);
   });
@@ -63,8 +67,40 @@ export function createScreen(deps: {
     return shot(done, clicked);
   }
 
+  async function waitFresh(before: Set<number>): Promise<Listed | undefined> {
+    for (const deadline = Date.now() + appearMs; ;) {
+      const fresh = (await windows()).filter(entry => !before.has(entry.hwnd) && !entry.minimized && entry.title);
+      if (fresh.length) return largest(fresh);
+      if (Date.now() >= deadline) return undefined;
+      await pause(400);
+    }
+  }
+  async function adopt(entry: Listed, app: string, said: string): Promise<DesktopResult> {
+    if ((await hands('refocus', { hwnd: entry.hwnd })).refocused !== true) said += '没能把它放到最前面，看截图确认。\n';
+    front = app; frontInfo = { exe: entry.exe, title: entry.title }; frontHwnd = entry.hwnd;
+    return after(said);
+  }
+  async function closeWindow(): Promise<DesktopResult> {
+    if (frontHwnd === undefined) throw new Error('还没有在最前面的窗口：先 desktop open 它');
+    const closing = frontHwnd;
+    await hands('close', { hwnd: closing });
+    for (const deadline = Date.now() + 4000; Date.now() < deadline;) {
+      if (!(await windows()).some(entry => entry.hwnd === closing)) break;
+      await pause(200);
+    }
+    front = undefined; frontInfo = undefined; frontHwnd = undefined; view = undefined;
+    return { text: '已关闭最前面的窗口。' };
+  }
   /** A program's window in front: an open one, then its tray icon, then the Start menu. */
-  async function open(app?: string, url?: string): Promise<DesktopResult> {
+  async function open(app?: string, url?: string, path?: string, file?: string): Promise<DesktopResult> {
+    if (path?.trim() || file?.trim()) {
+      const before = new Set((await windows()).map(entry => entry.hwnd));
+      const exe = path ? path.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '') : '文档';
+      if (path) await eyes('launch', { path }); else await eyes('openfile', { file });
+      const entry = await waitFresh(before);
+      if (!entry) throw new Error(`启动了 ${path ?? file}，但 ${appearMs / 1000} 秒内没有出现窗口`);
+      return adopt(entry, exe, `已启动 ${path ?? file}（窗口：${entry.title}）；看截图确认。`);
+    }
     if (url?.trim()) {
       const target = url.trim();
       if (!/^https?:\/\//i.test(target)) throw new Error('url 要是 http:// 或 https:// 开头的网址');
@@ -95,6 +131,7 @@ export function createScreen(deps: {
     if (chosen.minimized) await hands('restore', { hwnd: chosen.hwnd });
     if ((await hands('refocus', { hwnd: chosen.hwnd })).refocused !== true) told += '没能把它放到最前面，看截图确认。\n';
     front = name;
+    frontInfo = { exe: chosen.exe, title: chosen.title };
     return after(told);
   }
   async function appear(name: string, before: Set<number>): Promise<Listed[]> {
@@ -111,7 +148,11 @@ export function createScreen(deps: {
   async function sign(show: boolean): Promise<void> {
     if (!deps.companion) return;
     try {
-      await hands('sign', show ? { show: true, hwnd: 0, text: `${deps.companion()}正在操作`, hint: '连按两下 Esc 停下', stop: '停下', stopped: '已停下' } : { show: false });
+      // 字和样式都由 appearance.json 说了算：{app} 换成现在最前面的那个程序。
+      const banner = readAppearance().banner;
+      await hands('sign', show
+        ? { show: true, hwnd: 0, text: bannerText(front), hint: banner.hint, stop: banner.stop, stopped: banner.stopped, style: banner }
+        : { show: false });
       deps.signFault?.(undefined);
     } catch (error) { deps.signFault?.(`操作提示没能显示：${error instanceof Error ? error.message : String(error)}`); }
   }
@@ -128,8 +169,9 @@ export function createScreen(deps: {
     record: input => watch.record(input),
     stop: () => watch.stop(),
     review: input => watch.review(input),
-    open: input => open(input.app, input.url),
+    open: input => open(input.app, input.url, input.path, input.file),
     shot: () => shot(),
+    close: () => closeWindow(),
     click: async input => {
       const at = onScreen(input.x, input.y);
       await hands('rclick', { x: at.x, y: at.y, right: input.right === true, count: input.double ? 2 : 1, hold: holdMs(input.hold) });
@@ -140,11 +182,16 @@ export function createScreen(deps: {
       await hands('rdrag', { x: from.x, y: from.y, x2: to.x, y2: to.y, right: input.right === true, hold: holdMs(input.hold) });
       return after(dragged(input.hold), to.local);
     },
+    move: async input => {
+      const at = onScreen(input.x, input.y);
+      await hands('rmove', { x: at.x, y: at.y });
+      return after('已把鼠标移过去，没有点击。', at.local);
+    },
     type: async input => {
       if (typeof input.text !== 'string' || !input.text) throw new Error('text 不能是空的');
       const at = input.x !== undefined || input.y !== undefined ? onScreen(input.x, input.y) : undefined;
       if (at) await hands('rclick', { x: at.x, y: at.y, right: false, count: 1 });
-      await hands('rtype', { text: input.text });
+      await hands('rtype', input.stream === true ? { text: input.text, delay: 40 } : { text: input.text });
       if (input.submit) await hands('rkey', { vk: VK.return, modifiers: [] });
       return after(input.submit ? '已输入并回车。' : '已输入。', at?.local);
     },
@@ -167,10 +214,14 @@ export function createScreen(deps: {
       return { text: '放大的局部附在结果里；在它上面量的坐标不能直接点，回到整张截图上点。', image: { data: part.data, mediaType: 'image/png' } };
     },
   };
-  const turns = createTurns<DesktopInput>({ run, sign, recording, app: () => front, lingerMs: deps.lingerMs ?? SCREEN_LINGER_MS });
+  const turns = createTurns<DesktopInput>({ run, sign, recording, app: () => front, about: () => frontInfo, ...(deps.audit ? { audit: deps.audit } : {}), lingerMs: deps.lingerMs ?? SCREEN_LINGER_MS });
   return {
     actions: turns.actions, act: turns.act, recent: turns.recent, halt: turns.halt, release: turns.release, halted: turns.halted,
+    /** The program in front, for the per-app policies and the audit window. */
+    about: () => front === undefined ? undefined : { app: front, exe: frontInfo?.exe, title: frontInfo?.title },
+    /** Every window on the desktop, so a policy can name one by its executable. */
+    windows: async () => windows(),
     /** When foreground mode is turned off: what the agent saw and recorded goes with it. */
-    reset(): void { view = undefined; front = undefined; recording.clear(); turns.reset(); },
+    reset(): void { view = undefined; front = undefined; frontInfo = undefined; recording.clear(); turns.reset(); },
   };
 }

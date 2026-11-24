@@ -4,10 +4,17 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDesktop, STOPPED } from '../src/desktop/desktop.ts';
+import { DEFAULT_APPEARANCE, forgetAppearance } from '../src/appearance.ts';
 import { createComputerUse } from '../src/index.ts';
 
 type Args = Record<string, unknown>;
 const WECHAT = { hwnd: 67996, owner: 0, pid: 14568, exe: 'Weixin', title: '微信', minimized: false, width: 1750, height: 1400 };
+
+/** 横幅的字和样式来自 appearance.json：指到一个空文件，测试只看默认值。 */
+const settings = mkdtempSync(join(tmpdir(), 'computer-sign-appearance-'));
+process.env.EVOCU_APPEARANCE_FILE = join(settings, 'appearance.json');
+forgetAppearance();
+test.after(() => { rmSync(settings, { recursive: true, force: true }); delete process.env.EVOCU_APPEARANCE_FILE; forgetAppearance(); });
 
 /** The helper: every call is kept; a click can be held open, so the partner can press stop while it is under way. */
 function helper(options: { signFails?: boolean } = {}) {
@@ -40,7 +47,16 @@ test('while she acts the partner sees the program\'s own words over the window s
   await s.desktop.act({ action: 'click', x: 10, y: 10 });
   const shown = s.signs().filter(args => args.show);
   assert.ok(shown.length >= 2);
-  for (const args of shown) assert.deepEqual(args, { show: true, hwnd: WECHAT.hwnd, text: '鲸鲸正在操作', hint: '连按两下 Esc 停下', stop: '停下', stopped: '已停下' }, 'her words never reach the banner');
+  for (const args of shown) {
+    assert.equal(args.show, true);
+    assert.equal(args.hwnd, WECHAT.hwnd);
+    assert.equal(args.text, 'DSH正在操作微信', 'her words never reach the banner: the banner names the program');
+    assert.equal(args.hint, DEFAULT_APPEARANCE.banner.hint);
+    assert.equal(args.stop, DEFAULT_APPEARANCE.banner.stop);
+    assert.equal(args.stopped, DEFAULT_APPEARANCE.banner.stopped);
+    // 整份横幅样式原样交给 PowerShell 助手去画。
+    assert.equal((args.style as typeof DEFAULT_APPEARANCE.banner).text, DEFAULT_APPEARANCE.banner.text);
+  }
   await pause(60);
   assert.deepEqual(s.signs().at(-1), { show: false });
   const before = s.signs().length;

@@ -4,11 +4,18 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createScreen } from '../src/desktop/screen.ts';
+import { DEFAULT_APPEARANCE, forgetAppearance } from '../src/appearance.ts';
 import { STOPPED } from '../src/desktop/turns.ts';
 import { createComputerUse } from '../src/index.ts';
 
 type Args = Record<string, unknown>;
 const GAME = { hwnd: 656506, owner: 0, pid: 28624, exe: 'StarRail', title: '崩坏：星穹铁道', minimized: false, width: 2560, height: 1600 };
+
+/** 横幅的字和样式来自 appearance.json：指到一个空文件，测试只看默认值。 */
+const settings = mkdtempSync(join(tmpdir(), 'computer-screen-appearance-'));
+process.env.EVOCU_APPEARANCE_FILE = join(settings, 'appearance.json');
+forgetAppearance();
+test.after(() => { rmSync(settings, { recursive: true, force: true }); delete process.env.EVOCU_APPEARANCE_FILE; forgetAppearance(); });
 
 /** Two helpers: `hands` (administrator: pictures, real input, the sign) and `eyes` (ordinary: windows and starting programs). */
 function helpers(windows = [GAME]) {
@@ -49,7 +56,14 @@ test('foreground mode sees the whole screen and acts with the real mouse and key
     ['rclick', { x: -1280, y: 800, right: true, count: 1, hold: 1000 }], ['rkey', { vk: 0x57, modifiers: [], hold: 3000 }], ['rdrag', { x: -2360, y: 200, x2: -1960, y2: 400, right: false, hold: 0 }]], 'a right button held for a second, w held for three, then a drag');
   assert.ok(h.by('eyes').every(([op]) => op === 'windows' || op === 'apps' || op === 'launch' || op === 'tray'), 'the ordinary helper never sends input');
   const signs = h.by('hands').filter(([op]) => op === 'sign').map(([, args]) => args);
-  assert.deepEqual(signs[0], { show: true, hwnd: 0, text: '鲸鲸正在操作', hint: '连按两下 Esc 停下', stop: '停下', stopped: '已停下' }, 'the sign is over the whole screen');
+  // 还没 open 过任何程序：横幅只写「DSH正在操作」。
+  assert.equal(signs[0].show, true);
+  assert.equal(signs[0].hwnd, 0);
+  assert.equal(signs[0].text, 'DSH正在操作', 'the sign is over the whole screen');
+  assert.equal(signs[0].hint, DEFAULT_APPEARANCE.banner.hint);
+  assert.equal(signs[0].stop, DEFAULT_APPEARANCE.banner.stop);
+  assert.equal(signs[0].stopped, DEFAULT_APPEARANCE.banner.stopped);
+  assert.equal((signs[0].style as typeof DEFAULT_APPEARANCE.banner).text, DEFAULT_APPEARANCE.banner.text);
 });
 
 test('opening a program brings its window to the front, and one that is not running is started by the ordinary helper', async () => {
