@@ -27,14 +27,15 @@ export interface MessageMap {
 export interface Point { x: number; y: number }
 export type Direction = 'up' | 'down' | 'left' | 'right';
 /** Steps on the user's computer, the `desktop` actions written down: nothing to read there, only pictures. */
+// 每一步都可以加 reason（为什么做这一步）：原样写进审计，用户看得见 agent 的打算。
 export type DesktopStep =
-  | { open: string }
-  | { click: Point & { double?: boolean; right?: boolean; hold?: number }; outward?: boolean }
-  | { drag: Point & { x2: number; y2: number; right?: boolean; hold?: number }; outward?: boolean }
-  | { type: { text: string } & Partial<Point>; outward?: boolean }
-  | { press: string; hold?: number; outward?: boolean }
-  | { scroll: { direction: Direction } & Partial<Point> }
-  | { wait: { seconds: number } };
+  | { open: string; reason?: string }
+  | { click: Point & { double?: boolean; right?: boolean; hold?: number }; outward?: boolean; reason?: string }
+  | { drag: Point & { x2: number; y2: number; right?: boolean; hold?: number }; outward?: boolean; reason?: string }
+  | { type: { text: string } & Partial<Point>; outward?: boolean; reason?: string }
+  | { press: string; hold?: number; outward?: boolean; reason?: string }
+  | { scroll: { direction: Direction } & Partial<Point>; reason?: string }
+  | { wait: { seconds: number }; reason?: string };
 interface Common { name: string; category: string; description: string; params: Record<string, Param> }
 export interface PageProcedure extends Common { where?: undefined; steps: Step[]; onAlarm?: boolean; summary?: string; messages?: MessageMap }
 /** `desktop` is replayed in background mode (one window), `screen` in foreground mode (the whole screen, real input). */
@@ -180,43 +181,45 @@ function desktopStep(value: unknown, path: string, known: ReadonlySet<string>): 
   if (actions.length !== 1) return fail(path, `每一步只能有一个动作（${DESKTOP_ACTIONS.join('、')}）`);
   const action = actions[0]!;
   const canGoOut = action === 'click' || action === 'drag' || action === 'type' || action === 'press';
-  for (const key of Object.keys(input)) if (key !== action && !(canGoOut && key === 'outward') && !(action === 'press' && key === 'hold')) fail(path, `${action} 这一步不认识 ${key}`);
+  for (const key of Object.keys(input)) if (key !== action && key !== 'reason' && !(canGoOut && key === 'outward') && !(action === 'press' && key === 'hold')) fail(path, `${action} 这一步不认识 ${key}`);
   const outward = flag(input.outward, `${path}.outward`), extra = outward === undefined ? {} : { outward };
+  // 为什么做这一步：审计会原样记下来，用户看得见 agent 的打算。
+  const named = input.reason === undefined ? {} : { reason: text(input.reason, `${path}.reason`, 300) };
   switch (action) {
-    case 'open': return { open: text(input.open, `${path}.open`, 200, known) };
+    case 'open': return { open: text(input.open, `${path}.open`, 200, known), ...named };
     case 'click': {
       const body = record(input.click, `${path}.click`);
       only(body, ['x', 'y', 'double', 'right', 'hold'], `${path}.click`);
       const double = flag(body.double, `${path}.click.double`), right = flag(body.right, `${path}.click.right`);
-      return { click: { x: coordinate(body.x, `${path}.click.x`), y: coordinate(body.y, `${path}.click.y`), ...(double ? { double } : {}), ...(right ? { right } : {}), ...held(body.hold, `${path}.click.hold`) }, ...extra };
+      return { click: { x: coordinate(body.x, `${path}.click.x`), y: coordinate(body.y, `${path}.click.y`), ...(double ? { double } : {}), ...(right ? { right } : {}), ...held(body.hold, `${path}.click.hold`) }, ...extra, ...named };
     }
     case 'drag': {
       const body = record(input.drag, `${path}.drag`);
       only(body, ['x', 'y', 'x2', 'y2', 'right', 'hold'], `${path}.drag`);
       const right = flag(body.right, `${path}.drag.right`);
-      return { drag: { x: coordinate(body.x, `${path}.drag.x`), y: coordinate(body.y, `${path}.drag.y`), x2: coordinate(body.x2, `${path}.drag.x2`), y2: coordinate(body.y2, `${path}.drag.y2`), ...(right ? { right } : {}), ...held(body.hold, `${path}.drag.hold`) }, ...extra };
+      return { drag: { x: coordinate(body.x, `${path}.drag.x`), y: coordinate(body.y, `${path}.drag.y`), x2: coordinate(body.x2, `${path}.drag.x2`), y2: coordinate(body.y2, `${path}.drag.y2`), ...(right ? { right } : {}), ...held(body.hold, `${path}.drag.hold`) }, ...extra, ...named };
     }
     case 'type': {
       const body = record(input.type, `${path}.type`);
       only(body, ['text', 'x', 'y'], `${path}.type`);
-      return { type: { text: text(body.text, `${path}.type.text`, 2000, known), ...optionalPoint(body, `${path}.type`) }, ...extra };
+      return { type: { text: text(body.text, `${path}.type.text`, 2000, known), ...optionalPoint(body, `${path}.type`) }, ...extra, ...named };
     }
     case 'press': {
       const key = text(input.press, `${path}.press`, 40);
       try { desktopKey(key); } catch (error) { fail(`${path}.press`, error instanceof Error ? error.message : String(error)); }
-      return { press: key, ...held(input.hold, `${path}.hold`), ...extra };
+      return { press: key, ...held(input.hold, `${path}.hold`), ...extra, ...named };
     }
     case 'scroll': {
       const body = record(input.scroll, `${path}.scroll`);
       only(body, ['direction', 'x', 'y'], `${path}.scroll`);
       if (!DIRECTIONS.includes(body.direction as Direction)) fail(`${path}.scroll.direction`, `应该是 ${DIRECTIONS.join('、')}`);
-      return { scroll: { direction: body.direction as Direction, ...optionalPoint(body, `${path}.scroll`) } };
+      return { scroll: { direction: body.direction as Direction, ...optionalPoint(body, `${path}.scroll`) }, ...named };
     }
     case 'wait': {
       const body = record(input.wait, `${path}.wait`);
       only(body, ['seconds'], `${path}.wait`);
       if (typeof body.seconds !== 'number' || !Number.isFinite(body.seconds) || body.seconds <= 0 || body.seconds > 60) fail(`${path}.wait.seconds`, '桌面上只能等几秒：大于 0、不超过 60');
-      return { wait: { seconds: body.seconds as number } };
+      return { wait: { seconds: body.seconds as number }, ...named };
     }
   }
 }

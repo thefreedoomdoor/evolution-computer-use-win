@@ -45,7 +45,8 @@ test('every input schema says what is required and refuses what it does not know
   const s = setup(t);
   const tools = s.tools();
   const open = tools.find(tool => tool.name === 'page_open')!;
-  assert.deepEqual(open.inputSchema, { type: 'object', properties: { url: { type: 'string' } }, required: ['url'], additionalProperties: false });
+  // reason 每一步都能给：这句话原样进审计，用户看得见 agent 的打算。
+  assert.deepEqual(open.inputSchema, { type: 'object', properties: { url: { type: 'string' }, reason: { type: 'string', description: '为什么做这一步，写进审计记录' } }, required: ['url'], additionalProperties: false });
   await assert.rejects(s.run(tools, 'page_open', {}), /page_open 缺少参数 url/);
   await assert.rejects(s.run(tools, 'page_open', { url: 'https://a.com/', urll: 'x' }), /page_open 不认识参数 urll/);
   await assert.rejects(s.run(tools, 'page_click', { ref: '1' }), /page_click 的参数 ref 应该是 integer/);

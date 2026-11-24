@@ -125,12 +125,14 @@ export async function runProcedure(procedure: Procedure, args: Args, driver: Dri
 }
 
 function desktopInput(step: Exclude<DesktopStep, { wait: unknown }>, args: Args): DesktopInput {
-  if ('open' in step) return { action: 'open', app: substitute(step.open, args) };
-  if ('click' in step) return { action: 'click', ...step.click };
-  if ('drag' in step) return { action: 'drag', ...step.drag };
-  if ('type' in step) return { action: 'type', ...step.type, text: substitute(step.type.text, args) };
-  if ('press' in step) return { action: 'press', key: step.press, ...(step.hold === undefined ? {} : { hold: step.hold }) };
-  return { action: 'scroll', ...step.scroll };
+  // 为什么做这一步：写进审计给用户看；reason 里的 {{参数}} 同样代入。
+  const reason = step.reason === undefined ? {} : { reason: substitute(step.reason, args) };
+  if ('open' in step) return { action: 'open', app: substitute(step.open, args), ...reason };
+  if ('click' in step) return { action: 'click', ...step.click, ...reason };
+  if ('drag' in step) return { action: 'drag', ...step.drag, ...reason };
+  if ('type' in step) return { action: 'type', ...step.type, text: substitute(step.type.text, args), ...reason };
+  if ('press' in step) return { action: 'press', key: step.press, ...(step.hold === undefined ? {} : { hold: step.hold }), ...reason };
+  return { action: 'scroll', ...step.scroll, ...reason };
 }
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
   const timer = setTimeout(resolve, ms);

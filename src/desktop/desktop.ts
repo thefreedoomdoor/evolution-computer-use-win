@@ -1,6 +1,8 @@
 import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { bannerText, readAppearance } from '../appearance.ts';
+import type { AuditSink } from '../audit.ts';
 import type { DesktopDriver } from './driver.ts';
 import { isRunning } from './processes.ts';
 import { createRecording } from './recording.ts';
@@ -30,7 +32,7 @@ export const DESKTOP_KEYS = 'return、tab、escape、space、backspace、delete�
 
 /** `owner` is the window it belongs to (0 for a main window): dialogs and panels such as WeChat's Moments composer. */
 export interface Listed { hwnd: number; owner: number; pid: number; exe: string; title: string; minimized: boolean; width: number; height: number }
-interface Window { hwnd: number; pid: number; app: string }
+interface Window { hwnd: number; pid: number; app: string; exe?: string; title?: string }
 /** The last picture of the current window: how many window pixels one picture pixel is, and its size. */
 interface View { scale: number; width: number; height: number }
 
@@ -81,6 +83,8 @@ export function createDesktop(deps: {
   companion?(): string;
   /** A banner that could not be drawn: said in the host's health, never a failed action of the agent's. */
   signFault?(text: string | undefined): void;
+  /** 审计：agent 在用户电脑上的每一步都记一条，给用户看的那个窗口读。 */
+  audit?: AuditSink;
   lingerMs?: number;
   /** Opens the address in the agent's own browser (CDP, behind other windows) and returns the page title; nothing is typed into the user's windows. */
   browse?(url: string): Promise<string | undefined>;
@@ -119,7 +123,8 @@ export function createDesktop(deps: {
   /** A window that went away (closed, minimized, into the tray) is never pictured; the agent is told and opens it again. */
   async function visible(): Promise<{ open: Window; windows: Listed[] }> {
     const open = current(), { windows } = await list();
-    if (windows.some(entry => entry.hwnd === open.hwnd && !entry.minimized)) return { open, windows };
+    const here = windows.find(entry => entry.hwnd === open.hwnd && !entry.minimized);
+    if (here) { open.exe = here.exe; open.title = here.title; return { open, windows }; }
     window = undefined; view = undefined;
     throw new Error(`${open.app} 的窗口不见了（关掉了、最小化了或收进了托盘）：先 desktop open 它`);
   }
@@ -264,7 +269,7 @@ export function createDesktop(deps: {
     }
     // Switching between one program's windows keeps what was seen; another program starts afresh.
     if (window?.pid !== chosen.pid) known = undefined;
-    window = { hwnd: chosen.hwnd, pid: chosen.pid, app: name };
+    window = { hwnd: chosen.hwnd, pid: chosen.pid, app: name, exe: chosen.exe, title: chosen.title };
     view = undefined;
     return shot(told);
   }
@@ -273,7 +278,11 @@ export function createDesktop(deps: {
   async function sign(show: boolean): Promise<void> {
     if (!deps.companion || (show && !window)) return;
     try {
-      await deps.driver.call('sign', show && window ? { show: true, hwnd: window.hwnd, text: `${deps.companion()}正在操作`, hint: '连按两下 Esc 停下', stop: '停下', stopped: '已停下' } : { show: false });
+      // 字和样式都由 appearance.json 说了算：{app} 换成 agent 正在操作的程序名。
+      const banner = readAppearance().banner;
+      await deps.driver.call('sign', show && window
+        ? { show: true, hwnd: window.hwnd, text: bannerText(window.app), hint: banner.hint, stop: banner.stop, stopped: banner.stopped, style: banner }
+        : { show: false });
       deps.signFault?.(undefined);
     } catch (error) { deps.signFault?.(`操作提示没能显示：${error instanceof Error ? error.message : String(error)}`); }
   }
@@ -334,11 +343,17 @@ export function createDesktop(deps: {
   };
 
   const turns = createTurns<DesktopInput>({
-    run, sign, recording, app: () => window?.app, ...(deps.lingerMs === undefined ? {} : { lingerMs: deps.lingerMs }),
+    run, sign, recording, app: () => window?.app, about: () => window ? { exe: window.exe, title: window.title } : undefined,
+    ...(deps.lingerMs === undefined ? {} : { lingerMs: deps.lingerMs }),
     acted: what => { acted = { what, at: Date.now() }; },
+    ...(deps.audit ? { audit: deps.audit } : {}),
   });
   return {
     actions: turns.actions, act: turns.act, recent: turns.recent, halt: turns.halt, release: turns.release, halted: turns.halted,
+    /** The window the agent is on, for the per-app policies and the audit window. */
+    about: () => window ? { app: window.app, exe: window.exe, title: window.title } : undefined,
+    /** Every window on the desktop, as the user's policies may name one by its executable. */
+    windows: async () => (await list()).windows,
     /** When the switch goes off: nothing the agent opened stays "current" for a later turn, and what the agent recorded is deleted. */
     reset(): void { window = undefined; view = undefined; known = undefined; acted = undefined; recording.clear(); turns.reset(); },
   };
@@ -351,4 +366,6 @@ export interface DesktopInput {
   hold?: number;
   /** For `record`: how long, and how far apart the frames are. For `review`: a stretch of the recording, or one moment of it. */
   seconds?: number; every?: number; from?: number; to?: number; at?: number; pause?: boolean;
+  /** 为什么做这一步：原样写进审计，用户看得见 agent 每一步的打算。 */
+  reason?: string;
 }

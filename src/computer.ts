@@ -6,11 +6,14 @@ import { createJsonlSink, type MessageSink } from './procedures/messages.ts';
 import { createRoutines } from './procedures/routines.ts';
 import { computerTools } from './tools.ts';
 import type { ToolResult, ToolSpec } from './tool.ts';
-import { createDesktop, type Desktop } from './desktop/desktop.ts';
+import { createDesktop, windowsNamed, type Desktop } from './desktop/desktop.ts';
 import { createDesktopDriver, type DesktopDriver } from './desktop/driver.ts';
 import { createScreen, type Screen } from './desktop/screen.ts';
 import type { DesktopMode } from './desktop/mode.ts';
 import { createInbox } from './inbox/inbox.ts';
+import { createAudit, type AuditSink } from './audit.ts';
+import { readAppearance } from './appearance.ts';
+import { matchAppPolicy, readAppPolicies, type PolicyTarget } from './policies.ts';
 
 /** A helper as the module uses it; only foreground mode's is started ahead of use. */
 type Hands = Pick<DesktopDriver, 'call' | 'running' | 'stop'> & Partial<Pick<DesktopDriver, 'start'>>;
@@ -32,6 +35,8 @@ export interface ComputerUseOptions {
   onToolsChanged?(): void;
   /** The user pressed stop on the banner; hosts that keep the stop across restarts persist it here. */
   onHalt?(): void;
+  /** 审计写不进去时说的话：审计绝不弄坏一次操作，所以它只能记日志（默认不打扰任何人）。 */
+  log?(text: string): void;
   // For tests and hosts that bring their own.
   browser?: Browser; platform?: NodeJS.Platform;
   desktopDriver?(events: (name: string) => void): Hands;
@@ -56,13 +61,23 @@ export function createComputerUse(options: ComputerUseOptions) {
   const browser = options.browser ?? createBrowser({ profileDir: options.profileDir ?? join(options.dataDir, 'browser'), faults });
   const messages = options.messages === false ? undefined : options.messages ?? createJsonlSink(join(options.dataDir, 'messages.jsonl'));
   const routines = createRoutines({ library, browser });
-  const companion = () => options.name?.trim() || 'AI';
+  const companion = () => options.name?.trim() || 'DSH';
+  /** 审计：桌面每一步（turns 里记）和工具调用（call 里记）都写进同一个目录，给用户的审计窗口读。 */
+  const audit = createAudit(options.log ? { log: options.log } : {});
+  /** turns 只看 screenshots() 决定要不要把截图交过来；落不落盘由审计按 appearance 再判一次。 */
+  const audited: AuditSink = { record: entry => audit.record(entry), screenshots: () => readAppearance().auditLog.screenshots };
   /** Said with the agent's next result: the user stopped it between steps. */
   const notices: string[] = [];
   /** Inbox words not read yet, and whether the agent has been told there are some. */
   const mailbox: string[] = [];
   let mailHinted = false;
   let desktopUse: { driver: Hands; desktop: Desktop; inbox?: Inbox; foreground?: { driver: Hands; screen: Screen } } | undefined;
+  /** 用户自己选了前台模式没有：按应用策略借来的管理员助手不算。 */
+  let userForeground = false;
+  /** 上一次 open 把 agent 放到哪个模式上；同一个程序后来的动作跟着它走。 */
+  let activeMode: 'foreground' | 'background' | undefined;
+  /** 借来的模式属于哪个程序：换到别的程序时它不再管用。 */
+  let activeFor: string | undefined;
   let cached: { revision: string; tools: ToolSpec[] } | undefined;
 
   const signFault = (text: string | undefined) => { if (text) faults.set('desktop-sign', text); else faults.clear('desktop-sign'); };
@@ -70,6 +85,7 @@ export function createComputerUse(options: ComputerUseOptions) {
   function changed(before: string): void { if (revision() !== before) options.onToolsChanged?.(); }
 
   function stopForeground(): void {
+    activeMode = undefined; activeFor = undefined;
     const foreground = desktopUse?.foreground;
     if (!foreground) return;
     foreground.screen.reset(); foreground.driver.stop();
@@ -77,6 +93,7 @@ export function createComputerUse(options: ComputerUseOptions) {
   }
   // What was recorded goes with the switch, like the window that was open.
   function stopDesktop(): void {
+    userForeground = false; activeMode = undefined; activeFor = undefined;
     stopForeground(); desktopUse?.inbox?.stop(); desktopUse?.desktop.reset(); desktopUse?.driver.stop(); desktopUse = undefined;
     mailbox.length = 0; mailHinted = false; faults.clear('desktop-sign');
   }
@@ -114,7 +131,7 @@ export function createComputerUse(options: ComputerUseOptions) {
     if (cached?.revision === current) return cached.tools;
     const list = computerTools({
       browser, library, ...(messages ? { messages } : {}), routines: () => routines(), health: () => faults.list(),
-      mode: desktopMode, setMode: setDesktopMode,
+      mode: desktopMode, setMode: setDesktopMode, pick,
       ...(desktopUse ? { desktop: desktopUse.desktop } : {}), ...(desktopUse?.foreground ? { screen: desktopUse.foreground.screen } : {}),
       ...(desktopUse?.inbox ? { inbox: readMail } : {}),
     });
@@ -130,8 +147,9 @@ export function createComputerUse(options: ComputerUseOptions) {
 
   /** Which of the three states the user's computer is in now. */
   function desktopMode(): DesktopMode {
-    if (desktopUse?.foreground) return 'foreground';
-    return desktopUse ? 'background' : 'off';
+    if (!desktopUse) return 'off';
+    // 按应用策略借来的管理员助手不算用户选了前台：全局模式始终是用户选的那个。
+    return userForeground && desktopUse.foreground ? 'foreground' : 'background';
   }
   /** Desktop control, on or off; the helper itself starts only when the agent first acts. Returns why it could not, or nothing. */
   function setDesktop(on: boolean): string | undefined {
@@ -142,7 +160,7 @@ export function createComputerUse(options: ComputerUseOptions) {
     const driver = options.desktopDriver?.(events) ?? createDesktopDriver({ faults, events });
     // The agent's own browser (CDP) opens the page behind everything else, so opening a URL never takes the user's focus.
     const desktop = createDesktop({
-      driver, companion, signFault,
+      driver, companion, signFault, audit: audited,
       browse: url => browser.run(async page => {
         await page.open(url);
         const title = await page.evaluate('return document.title', {});
@@ -159,18 +177,72 @@ export function createComputerUse(options: ComputerUseOptions) {
    * administrator, and the desktop tool works the whole screen until it is turned off or the process ends. Nothing
    * keeps it across a restart, so each time it is on the user has approved it. Returns why it could not, or nothing.
    */
-  async function setForeground(on: boolean): Promise<string | undefined> {
+  async function startForeground(): Promise<string | undefined> {
     const before = revision();
-    if (!on) { stopForeground(); changed(before); return undefined; }
     if (!desktopUse) return '先打开桌面控制';
     if (desktopUse.foreground) return undefined;
     const driver = options.foregroundDriver?.(events) ?? createDesktopDriver({ faults, events, elevated: true });
     try { await driver.start?.(); }
     catch (error) { driver.stop(); return errorText(error); }
     if (!desktopUse) { driver.stop(); return '桌面控制已经关掉了'; }
-    desktopUse.foreground = { driver, screen: createScreen({ hands: driver, eyes: desktopUse.driver, companion, signFault }) };
+    desktopUse.foreground = { driver, screen: createScreen({ hands: driver, eyes: desktopUse.driver, companion, signFault, audit: audited }) };
     changed(before);
     return undefined;
+  }
+  /** The user's own switch: remembered even when the UAC request is refused, in which case background mode stays on. */
+  async function setForeground(on: boolean): Promise<string | undefined> {
+    const before = revision();
+    if (!on) { userForeground = false; stopForeground(); changed(before); return undefined; }
+    const why = await startForeground();
+    userForeground = !why;
+    return why;
+  }
+  /**
+   * Which mode this step runs in: a per-app policy speaks first, and without one the user's global mode stands.
+   * A policy that says foreground borrows the administrator helper only for as long as the agent stays on that
+   * program, so the global switch the user sees never moves; a refusal makes this one step fail, as the contract says.
+   */
+  async function decideMode(input: Record<string, unknown>): Promise<'foreground' | 'background'> {
+    const global: 'foreground' | 'background' = userForeground ? 'foreground' : 'background';
+    if (!desktopUse) return global;
+    const policies = readAppPolicies();
+    const action = typeof input.action === 'string' ? input.action : '';
+    const named = typeof input.app === 'string' ? input.app.trim() : '';
+    const surface = activeMode === 'foreground' ? desktopUse.foreground?.screen : desktopUse.desktop;
+    const about = surface?.about?.();
+    let target: PolicyTarget | undefined = named ? { app: named } : about ? { app: about.app, exe: about.exe, title: about.title } : undefined;
+    // Which program this step is on: the one it names, else the one the agent is already on. A step on the program
+    // whose policy chose the mode keeps it, so a click after an open neither asks for UAC again nor drops to desktop.
+    const who = named || target?.app;
+    const same = activeMode !== undefined && who !== undefined && who === activeFor;
+    if (!policies.length || !target) return same || who === undefined ? (activeMode ?? global) : global;
+    // A program not open yet cannot be told by its executable: look it up in the window list so exe: policies know it too.
+    if (named && !target.exe) {
+      try {
+        const found = windowsNamed(await desktopUse.desktop.windows(), named)[0];
+        if (found) target = { app: named, exe: found.exe, title: found.title };
+      } catch { /* nothing listed: match by the agent's name alone */ }
+    }
+    const decided = matchAppPolicy(policies, target)?.mode;
+    // 换到别的程序就是换了个地方：策略说什么就是什么，没有策略就回到全局模式，借来的模式不跟过去。
+    if (action === 'open' || !same) {
+      // 借来的管理员助手只服务于那个程序，离开就关掉，不让它一直以管理员身份闲着。
+      if (activeMode === 'foreground' && !userForeground && decided !== 'foreground') stopForeground();
+      activeMode = decided;
+      activeFor = decided ? who : undefined;
+    }
+    return decided ?? activeMode ?? global;
+  }
+  /** Hands this step to the mode the policies chose; a foreground policy that cannot start its helper fails this step. */
+  async function pick(input: Record<string, unknown>): Promise<{ live: Pick<Desktop, 'act'>; screen: boolean } | undefined> {
+    if (!desktopUse) return undefined;
+    const mode = await decideMode(input);
+    if (mode === 'foreground' && !desktopUse.foreground) {
+      const why = await startForeground();
+      if (why) throw new Error(`这个程序按你的设置要用前台模式，但没能启动管理员助手：${why}`);
+    }
+    if (mode === 'foreground' && desktopUse.foreground) return { live: desktopUse.foreground.screen, screen: true };
+    return { live: desktopUse.desktop, screen: false };
   }
   /**
    * One switch for the three states. `foreground` asks the user through UAC; when that request is refused the
@@ -188,6 +260,20 @@ export function createComputerUse(options: ComputerUseOptions) {
     return refused;
   }
 
+  /**
+   * 工具层的一条审计：page_*、computer_use、procedure_*、inbox_read、desktop_mode 都是 agent 在用户这边做的事。
+   * desktop 自己的每一步在动作层已经记过（turns 里），这里不重复。
+   */
+  function auditedTool(name: string, args: Record<string, unknown>, ok: boolean, text: string): void {
+    if (name === 'desktop') return;
+    try {
+      audit.record({
+        at: new Date(), tool: name, action: toolPhrase(name, args), app: '', ok, result: text,
+        reason: typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : undefined,
+      });
+    } catch { /* 审计坏了也不能弄坏一次工具调用 */ }
+  }
+
   return {
     faults, library,
     /** The tools as they stand now; the list changes only with the user's switches. */
@@ -196,13 +282,15 @@ export function createComputerUse(options: ComputerUseOptions) {
     async call(name: string, args: unknown, signal: AbortSignal = new AbortController().signal): Promise<ToolResult> {
       const tool = tools().find(entry => entry.name === name);
       if (!tool) throw new Error(`没有 ${name} 这个工具${name === 'desktop' ? '：桌面控制没有打开，要请用户打开' : ''}`);
+      const asked = (args ?? {}) as Record<string, unknown>;
       let result: ToolResult;
       try { result = await tool.execute(args as Record<string, unknown>, { signal }); }
-      catch (error) { throw new Error(errorText(error) + asides(), { cause: error }); }
+      catch (error) { auditedTool(name, asked, false, errorText(error)); throw new Error(errorText(error) + asides(), { cause: error }); }
+      auditedTool(name, asked, true, result.text);
       return { ...result, text: result.text + asides() };
     },
     desktopOn: () => desktopUse !== undefined,
-    foregroundOn: () => desktopUse?.foreground !== undefined,
+    foregroundOn: () => userForeground,
     /** off / background / foreground, as one word rather than something the host has to infer. */
     desktopMode,
     setDesktop,
@@ -221,7 +309,7 @@ export function createComputerUse(options: ComputerUseOptions) {
         name, guide: guide.trim() !== '',
         operations: library.list().filter(entry => entry.procedure.category === name).map(({ procedure, path }) => ({ name: procedure.name, description: procedure.description, onAlarm: procedure.onAlarm === true, last: library.lastRun(path) ?? null })),
       })),
-      desktop: desktopUse ? { running: desktopUse.driver.running(), mode: desktopMode(), foreground: desktopUse.foreground !== undefined, halted: desktopUse.desktop.halted(), recent: (desktopUse.foreground?.screen ?? desktopUse.desktop).recent().slice(0, 5) } : null,
+      desktop: desktopUse ? { running: desktopUse.driver.running(), mode: desktopMode(), foreground: userForeground, halted: desktopUse.desktop.halted(), recent: (desktopUse.foreground?.screen ?? desktopUse.desktop).recent().slice(0, 5) } : null,
       inbox: desktopUse?.inbox ? { ...desktopUse.inbox.status(), unread: mailbox.length } : null,
       faults: faults.list(),
     }),
@@ -229,5 +317,30 @@ export function createComputerUse(options: ComputerUseOptions) {
     show: () => browser.show(),
     stop: () => { browser.stop(); stopDesktop(); library.clearFaults(); faults.clear('computer', 'desktop', 'foreground-mode'); },
   };
+}
+/** 审计里的 action：工具名加上这次用的参数；中文说法在 audit.ts 那边生成。 */
+function toolPhrase(name: string, args: Record<string, unknown>): string {
+  const said = (key: string) => typeof args[key] === 'string' ? args[key] as string : '';
+  const shown = (key: string) => args[key] === undefined || args[key] === null ? '' : String(args[key]);
+  switch (name) {
+    case 'page_open': return `page_open ${said('url')}`.trim();
+    case 'page_read': return `page_read ${[shown('page'), shown('ref')].filter(Boolean).join(' ')}`.trim();
+    case 'page_click': return `page_click ${shown('ref')}`.trim();
+    // 在页面里打的字可能是密码，审计只留编号，不留内容。
+    case 'page_type': return `page_type ${shown('ref')}`.trim();
+    case 'page_press': return `page_press ${said('key')}`.trim();
+    case 'page_scroll': return `page_scroll ${said('direction')} ${shown('ref')}`.trim();
+    case 'page_wait': return `page_wait ${said('text').slice(0, 40)} ${shown('ref')}`.trim();
+    case 'page_shot': return 'page_shot';
+    case 'page_eval': return 'page_eval';
+    case 'computer_use': return `computer_use ${said('target')}`.trim();
+    case 'procedure_run': return `procedure_run ${said('path')}`.trim();
+    case 'procedure_save': return 'procedure_save';
+    case 'procedure_note': return `procedure_note ${said('category')}`.trim();
+    case 'procedure_routines': return 'procedure_routines';
+    case 'inbox_read': return 'inbox_read';
+    case 'desktop_mode': return `desktop_mode ${said('mode')}`.trim();
+    default: return name;
+  }
 }
 export type ComputerUse = ReturnType<typeof createComputerUse>;

@@ -21,6 +21,12 @@ export interface PolicyTarget { exe?: string; app?: string; title?: string }
 
 export const POLICIES_FILE = join(homedir(), '.evolution-computer-use', 'app-policies.json');
 
+/** Where the policies live: EVOCU_POLICIES_FILE for tests and unusual installs, else the shared data directory. */
+export function policiesFile(): string {
+  const named = process.env.EVOCU_POLICIES_FILE?.trim();
+  return named || POLICIES_FILE;
+}
+
 export function parsePolicies(value: unknown): AppPolicy[] {
   const raw = (typeof value === 'object' && value !== null ? value : {}) as { apps?: unknown };
   if (!Array.isArray(raw.apps)) return [];
@@ -51,12 +57,13 @@ export function parsePolicies(value: unknown): AppPolicy[] {
 let cache: { stamp: number; value: AppPolicy[] } | undefined;
 
 export function readAppPolicies(): AppPolicy[] {
+  const file = policiesFile();
   let stamp = 0;
-  try { stamp = statSync(POLICIES_FILE).mtimeMs; } catch { /* absent: no overrides */ }
+  try { stamp = statSync(file).mtimeMs; } catch { /* absent: no overrides */ }
   if (cache && cache.stamp === stamp) return cache.value;
   let value: AppPolicy[] = [];
   if (stamp !== 0) {
-    try { value = parsePolicies(JSON.parse(readFileSync(POLICIES_FILE, 'utf8').replace(/^﻿/, ''))); }
+    try { value = parsePolicies(JSON.parse(readFileSync(file, 'utf8').replace(/^﻿/, ''))); }
     catch { value = []; }
   }
   cache = { stamp, value };
@@ -81,4 +88,9 @@ export function matchAppPolicy(policies: AppPolicy[], target: PolicyTarget): App
 
 export function forgetPolicies(): void {
   cache = undefined;
+}
+
+/** What the policies say to use for one target, reading the file as it stands now; nothing when no policy matches. */
+export function policyMode(target: PolicyTarget): PolicyMode | undefined {
+  return matchAppPolicy(readAppPolicies(), target)?.mode;
 }

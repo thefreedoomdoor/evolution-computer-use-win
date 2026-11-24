@@ -11,11 +11,16 @@ import { desktopAdvice, isWebAddress, WEB_ONLY, type MessageMap } from './proced
 import { DESKTOP_KEYS, type Desktop, type DesktopInput, type DesktopResult } from './desktop/desktop.ts';
 import { DESKTOP_MODES, isDesktopMode, type DesktopMode } from './desktop/mode.ts';
 
-const DESKTOP_NOTE = `操作用户的电脑（后台模式）：看当前窗口的截图，按图上的像素操作；输入直接投给那个窗口，不动用户的鼠标、不抢焦点，用户用着电脑也能用。学会的操作先用 computer_use 找。以管理员权限运行的程序（很多游戏）后台够不着，要用就请用户切到前台模式。action 取一种：open（app 写程序名，打开它当作当前窗口，托盘里的会点开；url 写网址，用 agent 自己的后台浏览器（CDP，独立窗口）打开并截它的窗口，不碰用户已开的 Edge/Chrome、不抢焦点；不写就列出开着的窗口）｜shot（再截一张）｜click（x、y 是截图上的像素；double 双击，right 右键，hold 按住几秒是长按）｜drag（从 x、y 按住拖到 x2、y2 松开；hold 先按住几秒再拖，right 用右键）｜type（text；给 x、y 就先点那里；submit 再回车）｜press（key：${DESKTOP_KEYS}；hold 按住几秒）｜scroll（direction 为 up/down/left/right，可加 x、y）｜zoom（截图上 x、y 到 x2、y2 放大看）｜record（看视频这类会动的：先让它播起来，录 seconds 秒，最多 600；every 每几秒一帧，默认 1；pause 为 false 时录完不暂停）｜stop（停下正在录的）｜review（看录好的：不带参数看全片，from、to 细看一段，at 看某一秒）。每步之后都有新截图，自己看做对了没有；没反应就换个办法，别重复同一下。`;
-/** Foreground mode: the same actions over the whole screen with the real mouse and keyboard. */
-const SCREEN_NOTE = `操作用户的电脑（前台模式）：用户把电脑交给了你。看整个屏幕的截图，用真的鼠标键盘按图上的像素操作，游戏和管理员程序也能用；用户的鼠标会跟着动。用户连按两下 Esc 或点屏幕顶上的「停下」就停。action 和后台模式一样：open（把程序放到最前面，没开的会启动；url 写网址交给浏览器打开；不写 app 就列出窗口）｜shot｜click（x、y，double、right，hold 长按几秒）｜drag（x、y 拖到 x2、y2；hold 先按住几秒，right）｜type（text，可先给 x、y，submit）｜press（key：${DESKTOP_KEYS}；hold 按住几秒，比如游戏里按住 w 走路）｜scroll（direction，可加 x、y）｜zoom（x、y 到 x2、y2）｜record（seconds、every、pause）｜stop｜review（from、to 或 at）。走通的步骤可以 procedure_save 存成 where:"screen" 的操作，以后在前台模式下用 procedure_run 回放。`;
+/** 每一步都可以说为什么做：这句话原样写进审计，用户看得见 agent 的打算。 */
+const REASON = { type: 'string' as const, description: '为什么做这一步，写进审计记录' };
 
-export const FORMAT_NOTE = '格式不对时保存会被拒绝并说明哪里不对。文件是 JSON：name（操作名，中文也行，不含 / 和 .）、category（分类，比如 wechat、bilibili）、description、params（{名字:{type,required?}}）、steps。步骤各取一种：open｜click｜type {into,text}｜press｜wait {text|anchor|url,seconds?}｜check｜extract {list,fields,limit?}｜script（可 return，as 存成值）。锚点 {role?,name?,text?,css?,nth?（从 0 数）}，role、name 用 page_read 里看到的；extract 的字段可以只写 attr，读列表项自己。文字里的 {{参数}} 会代入。会向外发出的步骤标 outward:true。extract 一条都没有、某个字段每条都空、带 as 的 script 结果为空，都算没跑通；本来就可能为空的（比如没有未读）在那一步加 allowEmpty:true。check 最多等 3 秒。没跑通而且还没有向外的动作时，会依次试最近 2 个旧版本。onAlarm:true 表示例行操作，procedure_routines 时自动跑（不能有必填参数和 outward 步骤）；summary 可用 {{as 名}} 和 {{count}}。messages 把 extract 的字段记成消息：channel、conversationType 写死，accountId、conversationId、messageId、speakerId、content 必填，其余可选，都是 {{字段}} 模板，outgoing 算出 true 表示是你自己发的。\n用户电脑上用 desktop 走通的：后台模式写 where:"desktop"，前台模式写 where:"screen"（只能在前台模式下跑）。步骤各取一种：open（程序名或窗口标题，比如「微信」「朋友圈」）｜click {x,y,double?,right?,hold?}｜drag {x,y,x2,y2,right?,hold?}｜type {text,x?,y?}｜press（同 desktop 的按键，可加 hold）｜scroll {direction,x?,y?}｜wait {seconds}。x、y 是 desktop 截图上的像素（desktop 是窗口的截图，screen 是整个屏幕的截图），大小变了会按比例跟着变。回放时步与步之间不停，手动做时等过的地方（点完才弹出的窗口）要写 wait。不能用 onAlarm、summary、messages。跑完会给最后一张截图，自己看做成了没有。';
+const POLICY_NOTE = '按应用设置的前后台策略优先于当前模式：策略要前台的程序会先申请管理员权限，用户拒绝时这一步失败；策略要后台的程序只把输入投给它的窗口。';
+
+const DESKTOP_NOTE = `操作用户的电脑（后台模式）：看当前窗口的截图，按图上的像素操作；输入直接投给那个窗口，不动用户的鼠标、不抢焦点，用户用着电脑也能用。学会的操作先用 computer_use 找。以管理员权限运行的程序（很多游戏）后台够不着，要用就请用户切到前台模式。action 取一种：open（app 写程序名，打开它当作当前窗口，托盘里的会点开；url 写网址，用 agent 自己的后台浏览器（CDP，独立窗口）打开并截它的窗口，不碰用户已开的 Edge/Chrome、不抢焦点；不写就列出开着的窗口）｜shot（再截一张）｜click（x、y 是截图上的像素；double 双击，right 右键，hold 按住几秒是长按）｜drag（从 x、y 按住拖到 x2、y2 松开；hold 先按住几秒再拖，right 用右键）｜type（text；给 x、y 就先点那里；submit 再回车）｜press（key：${DESKTOP_KEYS}；hold 按住几秒）｜scroll（direction 为 up/down/left/right，可加 x、y）｜zoom（截图上 x、y 到 x2、y2 放大看）｜record（看视频这类会动的：先让它播起来，录 seconds 秒，最多 600；every 每几秒一帧，默认 1；pause 为 false 时录完不暂停）｜stop（停下正在录的）｜review（看录好的：不带参数看全片，from、to 细看一段，at 看某一秒）。每步之后都有新截图，自己看做对了没有；没反应就换个办法，别重复同一下。每一步都可以给 reason（为什么做这一步），它会写进用户能看的审计。`;
+/** Foreground mode: the same actions over the whole screen with the real mouse and keyboard. */
+const SCREEN_NOTE = `操作用户的电脑（前台模式）：用户把电脑交给了你。看整个屏幕的截图，用真的鼠标键盘按图上的像素操作，游戏和管理员程序也能用；用户的鼠标会跟着动。用户连按两下 Esc 或点屏幕顶上的「停下」就停。action 和后台模式一样：open（把程序放到最前面，没开的会启动；url 写网址交给浏览器打开；不写 app 就列出窗口）｜shot｜click（x、y，double、right，hold 长按几秒）｜drag（x、y 拖到 x2、y2；hold 先按住几秒，right）｜type（text，可先给 x、y，submit）｜press（key：${DESKTOP_KEYS}；hold 按住几秒，比如游戏里按住 w 走路）｜scroll（direction，可加 x、y）｜zoom（x、y 到 x2、y2）｜record（seconds、every、pause）｜stop｜review（from、to 或 at）。走通的步骤可以 procedure_save 存成 where:"screen" 的操作，以后在前台模式下用 procedure_run 回放。每一步都可以给 reason（为什么做这一步），它会写进用户能看的审计。`;
+
+export const FORMAT_NOTE = '格式不对时保存会被拒绝并说明哪里不对。文件是 JSON：name（操作名，中文也行，不含 / 和 .）、category（分类，比如 wechat、bilibili）、description、params（{名字:{type,required?}}）、steps。步骤各取一种：open｜click｜type {into,text}｜press｜wait {text|anchor|url,seconds?}｜check｜extract {list,fields,limit?}｜script（可 return，as 存成值）。锚点 {role?,name?,text?,css?,nth?（从 0 数）}，role、name 用 page_read 里看到的；extract 的字段可以只写 attr，读列表项自己。文字里的 {{参数}} 会代入。会向外发出的步骤标 outward:true。extract 一条都没有、某个字段每条都空、带 as 的 script 结果为空，都算没跑通；本来就可能为空的（比如没有未读）在那一步加 allowEmpty:true。check 最多等 3 秒。没跑通而且还没有向外的动作时，会依次试最近 2 个旧版本。onAlarm:true 表示例行操作，procedure_routines 时自动跑（不能有必填参数和 outward 步骤）；summary 可用 {{as 名}} 和 {{count}}。messages 把 extract 的字段记成消息：channel、conversationType 写死，accountId、conversationId、messageId、speakerId、content 必填，其余可选，都是 {{字段}} 模板，outgoing 算出 true 表示是你自己发的。\n用户电脑上用 desktop 走通的：后台模式写 where:"desktop"，前台模式写 where:"screen"（只能在前台模式下跑）。步骤各取一种：open（程序名或窗口标题，比如「微信」「朋友圈」）｜click {x,y,double?,right?,hold?}｜drag {x,y,x2,y2,right?,hold?}｜type {text,x?,y?}｜press（同 desktop 的按键，可加 hold）｜scroll {direction,x?,y?}｜wait {seconds}；每一步都能加 reason（为什么做，写进审计）。x、y 是 desktop 截图上的像素（desktop 是窗口的截图，screen 是整个屏幕的截图），大小变了会按比例跟着变。回放时步与步之间不停，手动做时等过的地方（点完才弹出的窗口）要写 wait。不能用 onAlarm、summary、messages。跑完会给最后一张截图，自己看做成了没有。';
 
 export interface ToolsDeps {
   browser: Pick<Browser, 'run'>; library: ProcedureLibrary;
@@ -25,6 +30,8 @@ export interface ToolsDeps {
   desktop?: Pick<Desktop, 'act'>;
   /** Foreground mode is on: the desktop tool works the whole screen through these instead; saved operations still replay through `desktop`. */
   screen?: Pick<Desktop, 'act'>;
+  /** Per-app policies: which mode this one step should run in; absent when the host has no policies. */
+  pick?(input: Record<string, unknown>): Promise<{ live: Pick<Desktop, 'act'>; screen: boolean } | undefined>;
   /** The mode the user's computer is in now; absent when the host does not offer desktop control at all. */
   mode?(): DesktopMode;
   /** Switches that mode; returns why it could not, or nothing. Asked for `foreground` it goes through UAC. */
@@ -49,26 +56,26 @@ export function computerTools(deps: ToolsDeps): ToolSpec[] {
   const ref = (value: unknown) => ({ ref: whole(value, REF) });
   const where = (page: Page) => page.brief().then(text => text.split('\n')[0]);
   const page: ToolSpec[] = [
-    defineTool({ name: 'page_open', description: '在专用浏览器里打开一个地址（浏览器没开会先打开它，窗口在桌面上，不用用户的鼠标键盘），返回页面上的元素和文字，同 page_read。要登录时请用户在那个窗口里扫码或输入，登录态会留下。', parameters: { url: { type: 'string', required: true } },
+    defineTool({ name: 'page_open', description: '在专用浏览器里打开一个地址（浏览器没开会先打开它，窗口在桌面上，不用用户的鼠标键盘），返回页面上的元素和文字，同 page_read。要登录时请用户在那个窗口里扫码或输入，登录态会留下。', parameters: { url: { type: 'string', required: true }, reason: REASON },
       execute: async ({ url }) => { if (!isWebAddress(url)) throw new Error(WEB_ONLY); return run(async p => { await p.open(url); return p.read(); }); } }),
-    defineTool({ name: 'page_read', description: '读当前页面：每个可操作元素一行，[编号] 角色 名称；编号在页面不跳转时一直有效。page 翻看更多元素，ref 只看某个元素里面。之后附可见文字（截断）。', parameters: { page: { type: 'integer' }, ref: { type: 'integer' } },
+    defineTool({ name: 'page_read', description: '读当前页面：每个可操作元素一行，[编号] 角色 名称；编号在页面不跳转时一直有效。page 翻看更多元素，ref 只看某个元素里面。之后附可见文字（截断）。', parameters: { page: { type: 'integer' }, ref: { type: 'integer' }, reason: REASON },
       execute: async ({ page: index, ref: scope }) => {
         const options = { ...(index === undefined ? {} : { page: whole(index, 'page 应该是 1 以上的整数') }), ...(scope === undefined ? {} : ref(scope)) };
         return run(p => p.read(options));
       } }),
-    defineTool({ name: 'page_click', description: '点 page_read 给出的编号。', parameters: { ref: { type: 'integer', required: true } },
+    defineTool({ name: 'page_click', description: '点 page_read 给出的编号。', parameters: { ref: { type: 'integer', required: true }, reason: REASON },
       execute: async args => { const target = ref(args.ref); return run(async p => { await p.click(target); return `已点击 [${args.ref}]，现在：${await where(p)}`; }); } }),
-    defineTool({ name: 'page_type', description: '在编号对应的输入框里输入文字（整段输入，中文也行），框里原有的内容会被替换；submit 为 true 时再按回车。', parameters: { ref: { type: 'integer', required: true }, text: { type: 'string', required: true }, submit: { type: 'boolean' } },
+    defineTool({ name: 'page_type', description: '在编号对应的输入框里输入文字（整段输入，中文也行），框里原有的内容会被替换；submit 为 true 时再按回车。', parameters: { ref: { type: 'integer', required: true }, text: { type: 'string', required: true }, submit: { type: 'boolean' }, reason: REASON },
       execute: async args => { const target = ref(args.ref); return run(async p => { await p.type(target, args.text); if (args.submit) await p.press('Enter'); return `已输入，现在：${await where(p)}`; }); } }),
-    defineTool({ name: 'page_press', description: `按一个键：${PAGE_KEYS.join('、')}。`, parameters: { key: { type: 'string', required: true } },
+    defineTool({ name: 'page_press', description: `按一个键：${PAGE_KEYS.join('、')}。`, parameters: { key: { type: 'string', required: true }, reason: REASON },
       execute: async ({ key }) => run(async p => { await p.press(key); return `已按 ${key}，现在：${await where(p)}`; }) }),
-    defineTool({ name: 'page_scroll', description: '滚动一屏左右：direction 为 up 或 down；给 ref 就在那个元素上滚。', parameters: { direction: { type: 'string', required: true }, ref: { type: 'integer' } },
+    defineTool({ name: 'page_scroll', description: '滚动一屏左右：direction 为 up 或 down；给 ref 就在那个元素上滚。', parameters: { direction: { type: 'string', required: true }, ref: { type: 'integer' }, reason: REASON },
       execute: async args => {
         if (args.direction !== 'up' && args.direction !== 'down') throw new Error('direction 只能是 up 或 down');
         const direction = args.direction, target = args.ref === undefined ? undefined : ref(args.ref);
         return run(async p => { await p.scroll(direction, target); return '已滚动。'; });
       } }),
-    defineTool({ name: 'page_wait', description: '等某段文字出现（text，最多等 seconds 秒，默认 10）；或检查某个编号的元素还在（ref，立即返回）。seconds 最多 60。', parameters: { text: { type: 'string' }, ref: { type: 'integer' }, seconds: { type: 'number' } },
+    defineTool({ name: 'page_wait', description: '等某段文字出现（text，最多等 seconds 秒，默认 10）；或检查某个编号的元素还在（ref，立即返回）。seconds 最多 60。', parameters: { text: { type: 'string' }, ref: { type: 'integer' }, seconds: { type: 'number' }, reason: REASON },
       execute: async ({ text, ref: id, seconds = 10 }) => {
         if (text === undefined && id === undefined) throw new Error('要给 text 或 ref');
         if (text !== undefined && !text.trim()) throw new Error('text 不能是空的');
@@ -79,19 +86,19 @@ export function computerTools(deps: ToolsDeps): ToolSpec[] {
           await p.wait({ text: text! }, seconds * 1000, signal); return `等到了「${text}」。`;
         });
       } }),
-    defineTool({ name: 'page_shot', description: '截当前页面一张图；只在读文字看不明白时用，图片很占地方。', parameters: {},
+    defineTool({ name: 'page_shot', description: '截当前页面一张图；只在读文字看不明白时用，图片很占地方。', parameters: { reason: REASON },
       execute: async () => ({ text: '这是专用浏览器当前页面的截图。', images: [{ data: await run(p => p.shot()), mediaType: 'image/png' }] }) }),
-    defineTool({ name: 'page_eval', description: '在当前页面里执行一段 JS（可 return 一个能转成 JSON 的值），只在专用浏览器的页面里，碰不到电脑上的文件。十秒超时，结果截到 2000 字。', parameters: { script: { type: 'string', required: true } },
+    defineTool({ name: 'page_eval', description: '在当前页面里执行一段 JS（可 return 一个能转成 JSON 的值），只在专用浏览器的页面里，碰不到电脑上的文件。十秒超时，结果截到 2000 字。', parameters: { script: { type: 'string', required: true }, reason: REASON },
       execute: async ({ script }) => run(async p => cut(JSON.stringify(await p.evaluate(script, {})) ?? 'null', 2000)) }),
   ];
   const procedures: ToolSpec[] = [
-    defineTool({ name: 'computer_use', description: '用电脑之前先说这次要用的程序或网站（target 只写对象，比如「微信」「B站」，不写要做的事），返回这一类的说明、学会的操作名和文件所在的文件夹；要看某个操作的参数和步骤就读它的文件。不说就列出现在能用的模块、学会的操作有哪些分类，以及哪里坏了。', parameters: { target: { type: 'string' } },
+    defineTool({ name: 'computer_use', description: '用电脑之前先说这次要用的程序或网站（target 只写对象，比如「微信」「B站」，不写要做的事），返回这一类的说明、学会的操作名和文件所在的文件夹；要看某个操作的参数和步骤就读它的文件。不说就列出现在能用的模块、学会的操作有哪些分类，以及哪里坏了。', parameters: { target: { type: 'string' }, reason: REASON },
       // Asked without naming anything, the agent is first told which modules it has right now, and what is broken.
       execute: async ({ target }) => target?.trim() ? catalogText(deps.library, target) : [modules(), catalogText(deps.library), health()].filter(Boolean).join('\n') }),
-    defineTool({ name: 'procedure_run', description: '跑一个学会的操作：path 写「分类/操作」，args 是它声明的参数。不调模型，直接回放；没跑通会说第几步、为什么。', parameters: { path: { type: 'string', required: true }, args: { type: 'object' } },
+    defineTool({ name: 'procedure_run', description: '跑一个学会的操作：path 写「分类/操作」，args 是它声明的参数。不调模型，直接回放；没跑通会说第几步、为什么。', parameters: { path: { type: 'string', required: true }, args: { type: 'object' }, reason: REASON },
       execute: async ({ path, args }, context) => runStored(path, args ?? {}, context.signal) }),
     // The format is long and only needed when the agent writes one, so it is handed over on asking rather than sent with every step.
-    defineTool({ name: 'procedure_save', description: `把用 page_* 或 desktop 走通的步骤存成一个操作，以后用 procedure_run 直接跑；同名覆盖、留下旧版本。文件在 ${deps.library.dir}，也可以直接改。json 是整份操作；第一次写或记不清格式，就不带 json 调一次，会给出完整的格式说明。`, parameters: { json: { type: 'string' } },
+    defineTool({ name: 'procedure_save', description: `把用 page_* 或 desktop 走通的步骤存成一个操作，以后用 procedure_run 直接跑；同名覆盖、留下旧版本。文件在 ${deps.library.dir}，也可以直接改。json 是整份操作；第一次写或记不清格式，就不带 json 调一次，会给出完整的格式说明。`, parameters: { json: { type: 'string' }, reason: REASON },
       execute: async ({ json }) => {
         if (!json?.trim()) return `操作文件的格式：\n${FORMAT_NOTE}`;
         try {
@@ -101,30 +108,32 @@ export function computerTools(deps: ToolsDeps): ToolSpec[] {
         }
         catch (error) { throw new Error(`没有保存：${errorText(error)}（完整格式：不带 json 调一次 procedure_save）`); }
       } }),
-    defineTool({ name: 'procedure_note', description: '写某一类操作的说明：这一类对应哪个程序或网站（写上程序名、网址和别称，computer_use 靠它找到这一类）、要注意什么。整份替换，旧的留作版本，最多 1000 字。', parameters: { category: { type: 'string', required: true }, text: { type: 'string', required: true } },
+    defineTool({ name: 'procedure_note', description: '写某一类操作的说明：这一类对应哪个程序或网站（写上程序名、网址和别称，computer_use 靠它找到这一类）、要注意什么。整份替换，旧的留作版本，最多 1000 字。', parameters: { category: { type: 'string', required: true }, text: { type: 'string', required: true }, reason: REASON },
       execute: async ({ category, text }) => {
         try { return `已写好 ${category} 的说明（第 ${deps.library.saveGuide(category, text)} 版）。`; }
         catch (error) { throw new Error(`没有保存：${errorText(error)}`); }
       } }),
-    defineTool({ name: 'procedure_routines', description: '把所有标了 onAlarm 的网页操作（例行操作，比如看各处的未读）各跑一次，在单独的标签页里，不动当前页面；每个操作一行结果，没跑通的照实说。', parameters: {},
+    defineTool({ name: 'procedure_routines', description: '把所有标了 onAlarm 的网页操作（例行操作，比如看各处的未读）各跑一次，在单独的标签页里，不动当前页面；每个操作一行结果，没跑通的照实说。', parameters: { reason: REASON },
       execute: async () => (await deps.routines()) ?? '没有例行操作：网页操作里写 "onAlarm": true 就会在这里跑。' }),
   ];
   const live = deps.screen ?? deps.desktop;
   const desktop: ToolSpec[] = !live ? [] : [
-    defineTool({ name: 'desktop', description: deps.screen ? SCREEN_NOTE : DESKTOP_NOTE, parameters: {
+    defineTool({ name: 'desktop', description: (deps.screen ? SCREEN_NOTE : DESKTOP_NOTE) + (deps.pick ? POLICY_NOTE : ''), parameters: {
       action: { type: 'string', required: true }, app: { type: 'string' }, url: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' },
       double: { type: 'boolean' }, right: { type: 'boolean' }, hold: { type: 'number' }, text: { type: 'string' }, submit: { type: 'boolean' }, key: { type: 'string' }, direction: { type: 'string' },
-      seconds: { type: 'number' }, every: { type: 'number' }, from: { type: 'number' }, to: { type: 'number' }, at: { type: 'number' }, pause: { type: 'boolean' },
+      seconds: { type: 'number' }, every: { type: 'number' }, from: { type: 'number' }, to: { type: 'number' }, at: { type: 'number' }, pause: { type: 'boolean' }, reason: REASON,
     }, execute: async (input, context) => {
       context.signal.throwIfAborted();
-      return pictured(await live.act(input), deps.screen ? '这是用户电脑整个屏幕的截图。' : '这是用户电脑上当前窗口的截图。');
+      const routed = deps.pick ? await deps.pick(input) : undefined;
+      const wholeScreen = routed ? routed.screen : deps.screen !== undefined;
+      return pictured(await (routed?.live ?? live).act(input), wholeScreen ? '这是用户电脑整个屏幕的截图。' : '这是用户电脑上当前窗口的截图。');
     } }),
   ];
   const inbox = deps.inbox;
   /** The switch itself stays offered whatever the mode, or turning it back on could only be done outside the agent. */
   const switching: ToolSpec[] = !deps.setMode ? [] : [
     defineTool({ name: 'desktop_mode', description: `设置怎么操作用户的电脑，现在：${deps.mode?.() ?? 'off'}。mode 取 off（关掉，不再用用户的电脑）｜background（后台：只往当前窗口投递输入，不动用户的鼠标、不抢焦点，用户用着电脑也能用）｜foreground（前台：整个屏幕，真的鼠标键盘，用户的鼠标会跟着动，要管理员权限）。切到前台等于接管用户的鼠标键盘，必须先问用户同不同意，同意了再带 confirm: true 调用；不带 confirm 不会去请求管理员权限。从后台切到前台失败时后台模式会留着。`, parameters: {
-      mode: { type: 'string', required: true }, confirm: { type: 'boolean', description: '切到前台要用户明确同意，传 true' },
+      mode: { type: 'string', required: true }, confirm: { type: 'boolean', description: '切到前台要用户明确同意，传 true' }, reason: REASON,
     }, execute: async ({ mode, confirm }) => {
       if (!isDesktopMode(mode)) throw new Error(`mode 只能是 ${DESKTOP_MODES.join('、')}`);
       if (mode === 'foreground' && confirm !== true) return '还没有切换：前台模式会接管用户的鼠标键盘，并请用户确认管理员权限。先问用户同不同意，同意了再带 confirm: true 调用。';
@@ -134,14 +143,17 @@ export function computerTools(deps: ToolsDeps): ToolSpec[] {
     } }),
   ];
   const mail: ToolSpec[] = !inbox ? [] : [
-    defineTool({ name: 'inbox_read', description: '看信箱：任务栏上有程序在闪、或者来了系统通知时，这里汇总一句（每个程序一行）。只告诉你有动静，不替你打开；看不看、回不回你自己定。', parameters: {},
+    defineTool({ name: 'inbox_read', description: '看信箱：任务栏上有程序在闪、或者来了系统通知时，这里汇总一句（每个程序一行）。只告诉你有动静，不替你打开；看不看、回不回你自己定。', parameters: { reason: REASON },
       execute: async () => inbox() ?? '信箱里没有新的动静。' }),
   ];
   return [...page, ...procedures, ...switching, ...desktop, ...mail];
 
   /** The modules the agent can use now; the desktop line follows its switch and mode. */
   function modules(): string {
-    const desktop = deps.screen ? 'desktop（用户的电脑，前台模式：整个屏幕，真的鼠标键盘）' : deps.desktop ? 'desktop（用户的电脑，后台模式：一个窗口，不动用户的鼠标）' : '';
+    // 按应用策略可能同时借来前台助手，所以先看用户自己选的是哪个模式，只有没给 mode 时才按有没有整屏工具来猜。
+    const chosen = deps.mode?.();
+    const whole = chosen === 'foreground' || (chosen === undefined && deps.screen !== undefined);
+    const desktop = deps.desktop || deps.screen ? `desktop（用户的电脑，${whole ? '前台模式：整个屏幕，真的鼠标键盘' : '后台模式：一个窗口，不动用户的鼠标'}）` : '';
     const switching = deps.setMode ? `desktop_mode（关闭、后台、前台之间切换，现在：${deps.mode?.() ?? 'off'}）` : '';
     return `现在能用：page_*（专用浏览器）、${desktop ? `${desktop}、` : ''}${switching ? `${switching}、` : ''}procedure_*（学会的操作）${inbox ? '、inbox_read（信箱）' : ''}。`;
   }

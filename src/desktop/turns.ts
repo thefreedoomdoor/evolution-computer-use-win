@@ -1,4 +1,6 @@
 import type { Image } from '../shared/image.ts';
+import { errorText } from '../shared/faults.ts';
+import type { AuditSink } from '../audit.ts';
 import type { Recording } from './recording.ts';
 
 /** What one desktop action hands back: short text, and the picture the agent acts on (`caption` when it is not a picture of now). */
@@ -25,8 +27,12 @@ export function createTurns<I extends { action: string }>(deps: {
   recording: Pick<Recording, 'running' | 'stop' | 'touched'>;
   /** What the agent is on, for the status list of the agent's last actions. */
   app(): string | undefined;
+  /** The window behind that name, for the audit: an executable and a title let the user's per-app policies and the audit window tell programs apart. */
+  about?(): { exe?: string; title?: string } | undefined;
   /** The agent sent input; `what` is how it is named to the agent. */
   acted?(what: string): void;
+  /** 审计：每一步做了什么、成没成、为什么做。审计自己决定要不要留截图，也自己吞掉所有错误。 */
+  audit?: AuditSink;
   lingerMs?: number;
 }) {
   let queue: Promise<unknown> = Promise.resolve(), halted = false, stops = 0, busy = 0, hideTimer: ReturnType<typeof setTimeout> | undefined;
@@ -40,6 +46,33 @@ export function createTurns<I extends { action: string }>(deps: {
   }
   function quiet(): void { if (hideTimer) { clearTimeout(hideTimer); hideTimer = undefined; } }
 
+  /**
+   * 记一条审计：这一步叫什么、参数、成没成、结果说了什么，原因由 agent 给（没有的话审计会去读思考）。
+   * 失败也记——用户要知道 agent 到底试过什么。审计坏掉绝不能弄坏这一步。
+   */
+  function record(input: I, ok: boolean, result?: DesktopResult, error?: unknown): void {
+    const sink = deps.audit;
+    if (!sink) return;
+    try {
+      // 参数是调用方给的，这里只取审计认识的几个。
+      const raw = input as unknown as Record<string, unknown>;
+      const number = (key: string) => typeof raw[key] === 'number' ? raw[key] as number : undefined;
+      const said = (key: string) => typeof raw[key] === 'string' ? raw[key] as string : undefined;
+      const picture = ok && result?.image ? (sink.screenshots() ? result.image.data : undefined) : undefined;
+      const about = deps.about?.();
+      sink.record({
+        at: new Date(), tool: 'desktop', action: input.action, app: deps.app() ?? '',
+        exe: about?.exe, title: about?.title,
+        x: number('x'), y: number('y'), x2: number('x2'), y2: number('y2'),
+        double: raw.double === true, right: raw.right === true,
+        key: said('key'), text: said('text'), direction: said('direction'), seconds: number('seconds'),
+        ok, result: ok ? result?.text ?? '' : errorText(error),
+        reason: said('reason')?.trim() || undefined,
+        image: picture,
+      });
+    } catch { /* 审计坏了也不能弄坏这一步 */ }
+  }
+
   return {
     actions: Object.keys(deps.run),
     /** One action, after the ones before it; what the agent did is kept without what the agent typed. */
@@ -52,12 +85,17 @@ export function createTurns<I extends { action: string }>(deps: {
         const what = INPUTS[input.action];
         // The agent's own input may have paused or started it, so a pause made for the agent is no longer taken for granted.
         if (what) { deps.acted?.(what); deps.recording.touched(); }
-        if (!touches) return work(input);
+        // 一步做完（成或败）就进审计；用户中途按下停下的那一步也照记，它确实做了。
+        const traced = async (): Promise<DesktopResult> => {
+          try { const result = await work(input); record(input, true, result); return result; }
+          catch (error) { record(input, false, undefined, error); throw error; }
+        };
+        if (!touches) return traced();
         const before = stops;
         busy++;
         try {
           await deps.sign(true);
-          const result = await work(input);
+          const result = await traced();
           if (stops !== before) throw new Error(STOPPED);
           await deps.sign(true);
           return result;
