@@ -176,7 +176,8 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 | `name`、`category` | 文件位置：`<procedures>/<category>/<name>.json`。 |
 | `description` | 一行说明，告诉 Agent 什么时候该用它。 |
 | `params` | 可选参数：参数名到 `type`（`string`、`number`、`boolean`）、`required`、`description` 的映射。`onAlarm` 操作不能声明必填参数。 |
-| `steps` | 按顺序执行的步骤。 |
+| `where` | 要操作用户电脑的操作写 `"desktop"`（后台模式）或 `"screen"`（前台模式）；这类操作不能设 `onAlarm`、`summary`、`messages`。只在网页上做的操作不写。 |
+| `steps` | 按顺序执行的步骤，最多 40 步。 |
 | `onAlarm` | 标记为定时操作，供 `procedure_routines` 与定时任务使用。 |
 | `summary` | 可选模板，用于定时报告，例如 `私信 {{count}} 条`。 |
 | `messages` | 可选映射，把抽取到的消息写进 `messages.jsonl`。 |
@@ -195,6 +196,18 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 | `script` | `{"script": "…", "as": "名字"}` | 声明式步骤够不到时，在页面里执行脚本。 |
 
 每个步骤可带两个标记：`outward: true` 表示这一步会往外发东西（消息、评论），永远不会被自动重试；`allowEmpty: true` 表示这一步本来就可能没有结果。
+
+写了 `where` 的操作操作用户的电脑而不是网页，步骤是本机截图上像素：`x`、`y` 取 0–4000，要么都写要么都不写。
+
+| 步骤 | 写法 | 说明 |
+| --- | --- | --- |
+| `open` | `{"open": "微信"}` | 按名字打开程序：它的窗口、托盘图标或开始菜单。 |
+| `click` | `{"click": {"x": 120, "y": 240, "double": true, "right": true, "hold": 2}}` | `double`、`right`、`hold` 可选。 |
+| `drag` | `{"drag": {"x": 10, "y": 20, "x2": 300, "y2": 400}}` | 在 `x`,`y` 按下，拖到 `x2`,`y2` 松开；`right`、`hold` 可选。 |
+| `type` | `{"type": {"text": "你好", "x": 100, "y": 200}}` | 坐标可选；写了就先点那里。 |
+| `press` | `{"press": "return", "hold": 0.5}` | 桌面按键名；`hold` 秒数可选。 |
+| `scroll` | `{"scroll": {"direction": "down", "x": 500, "y": 300}}` | `direction` 取 `up`、`down`、`left`、`right`。 |
+| `wait` | `{"wait": {"seconds": 2}}` | 只等秒数，大于 0、不超过 60。 |
 
 ```json
 {

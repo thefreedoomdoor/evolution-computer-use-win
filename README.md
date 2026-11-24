@@ -174,7 +174,8 @@ A procedure is one JSON file. The agent learns by exploring (`computer_use` → 
 | `name`, `category` | File location: `<procedures>/<category>/<name>.json`. |
 | `description` | One line telling the agent when to use it. |
 | `params` | Optional parameters: a map from each parameter's name to `type` (`string`, `number` or `boolean`), `required` and `description`. An `onAlarm` procedure cannot declare required parameters. |
-| `steps` | The operations, executed in order. |
+| `where` | `"desktop"` or `"screen"` for a procedure that works the user's computer — background mode or foreground mode. Such a procedure cannot set `onAlarm`, `summary` or `messages`. A web procedure omits it. |
+| `steps` | The operations, executed in order; at most 40. |
 | `onAlarm` | Marks a routine for `procedure_routines` and scheduled runs. |
 | `summary` | Optional template used in routine reports, e.g. `私信 {{count}} 条`. |
 | `messages` | Optional mapping that writes extracted messages to `messages.jsonl`. |
@@ -193,6 +194,18 @@ Step kinds, all in the same declarative shape:
 | `script` | `{"script": "…", "as": "name"}` | In-page script for what declarative steps cannot reach. |
 
 Two flags per step: `outward: true` marks a step that sends something (a message, a comment); it is never retried automatically. `allowEmpty: true` marks a step that may legitimately come back empty.
+
+A procedure with `where` set works the user's computer instead of a page, and its steps are pixels on the screenshot (`x` and `y` are 0–4000, both or neither):
+
+| Step | Shape | Notes |
+| --- | --- | --- |
+| `open` | `{"open": "微信"}` | Opens a program by name, from its window, tray icon or the Start menu. |
+| `click` | `{"click": {"x": 120, "y": 240, "double": true, "right": true, "hold": 2}}` | `double`, `right` and `hold` are optional. |
+| `drag` | `{"drag": {"x": 10, "y": 20, "x2": 300, "y2": 400}}` | Press at `x`,`y`, release at `x2`,`y2`; `right` and `hold` are optional. |
+| `type` | `{"type": {"text": "你好", "x": 100, "y": 200}}` | The coordinates are optional: given, the field is clicked first. |
+| `press` | `{"press": "return", "hold": 0.5}` | Desktop key names; `hold` seconds are optional. |
+| `scroll` | `{"scroll": {"direction": "down", "x": 500, "y": 300}}` | Direction `up`, `down`, `left` or `right`. |
+| `wait` | `{"wait": {"seconds": 2}}` | Seconds only, more than 0 and at most 60. |
 
 ```json
 {
