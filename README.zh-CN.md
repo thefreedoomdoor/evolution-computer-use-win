@@ -286,7 +286,7 @@ evolution-computer-use-win [init|serve|resume|routines|status] [选项]
 
 ## 浮窗与外观
 
-Agent 在这台电脑上干活时最多会出现三块窗口：顶部一条操作横幅、右上角的思考浮窗、以及它左边的审计浮窗。三块都由同一个 WinForms 小助手绘制，默认鼠标穿透，并请 Windows 把它们排除在捕获之外（`SetWindowDisplayAffinity` 的 `WDA_EXCLUDEFROMCAPTURE`）：窗口截图里不会有它们，整屏截图在部分系统上仍可能带上。可以在 DSH 插件设置页里调，也可以手改 `~/.evolution-computer-use/appearance.json`；每个字段都有默认值，文件缺了或写坏了都不影响使用。
+Agent 在这台电脑上干活时最多会出现三块窗口：顶部一条操作横幅、右上角的思考浮窗、以及它左边的审计浮窗。三块都由同一个 WinForms 小助手绘制，默认鼠标穿透。后台操作时，同一个助手还会在每次鼠标动作的位置画一个 DSH 指针；它压在目标窗口之上、盖住目标窗口的前台应用之下。并请 Windows 把这些浮层排除在捕获之外（`SetWindowDisplayAffinity` 的 `WDA_EXCLUDEFROMCAPTURE`）：窗口截图里不会有它们，整屏截图在部分系统上仍可能带上。可以在 DSH 插件设置页里调，也可以手改 `~/.evolution-computer-use/appearance.json`；每个字段都有默认值，文件缺了或写坏了都不影响使用。
 
 ### 操作横幅
 

@@ -23,6 +23,9 @@ public class DeskWindow { public long hwnd { get; set; } public long owner { get
 public class DeskShot { public int width { get; set; } public int height { get; set; } public int clientWidth { get; set; } public int clientHeight { get; set; } public string print { get; set; } public int left { get; set; } public int top { get; set; } }
 
 public static class Desk {
+  /** Set by the PowerShell side for one input: where the drawn DSH cursor goes, and which window it follows. */
+  public static long CursorHwnd;
+  public static Action<int,int> CursorSink;
   [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
   [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
   [StructLayout(LayoutKind.Sequential)] struct GUITHREADINFO { public int cbSize, flags; public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret; public RECT rcCaret; }
@@ -231,8 +234,12 @@ public static class Desk {
 
   public static void Click(long hwnd, int x, int y, bool right, int count, int hold) {
     Aware();
+    var top = Live(hwnd);
+    var screen = new POINT { X = x, Y = y };
+    ClientToScreen(top, ref screen);
+    if (CursorSink != null) CursorSink(screen.X, screen.Y);
     var point = new POINT { X = x, Y = y };
-    var target = Under(Live(hwnd), ref point);
+    var target = Under(top, ref point);
     var at = Pack(point.X, point.Y);
     uint down = right ? 0x204u : 0x201u, up = right ? 0x205u : 0x202u, twice = right ? 0x206u : 0x203u;
     var button = new IntPtr(right ? 2 : 1);
@@ -247,8 +254,12 @@ public static class Desk {
   /** Moves the pointer with no button pressed: a program sees the pointer over it, and nothing is clicked. */
   public static void Move(long hwnd, int x, int y) {
     Aware();
+    var top = Live(hwnd);
+    var screen = new POINT { X = x, Y = y };
+    ClientToScreen(top, ref screen);
+    if (CursorSink != null) CursorSink(screen.X, screen.Y);
     var point = new POINT { X = x, Y = y };
-    var target = Under(Live(hwnd), ref point);
+    var target = Under(top, ref point);
     PostMessage(target, 0x200, IntPtr.Zero, Pack(point.X, point.Y));
     Thread.Sleep(30);
   }
@@ -268,15 +279,23 @@ public static class Desk {
    */
   public static void Drag(long hwnd, int x, int y, int x2, int y2, bool right, int hold) {
     Aware();
+    var top = Live(hwnd);
     var point = new POINT { X = x, Y = y };
-    var target = Under(Live(hwnd), ref point);
+    var target = Under(top, ref point);
+    var screen = new POINT { X = x, Y = y };
+    ClientToScreen(top, ref screen);
+    if (CursorSink != null) CursorSink(screen.X, screen.Y);
     int dx = x2 - x, dy = y2 - y;
     uint down = right ? 0x204u : 0x201u, up = right ? 0x205u : 0x202u;
     var button = new IntPtr(right ? 2 : 1);
     PostMessage(target, 0x200, IntPtr.Zero, Pack(point.X, point.Y));
     PostMessage(target, down, button, Pack(point.X, point.Y));
     Thread.Sleep(hold > 0 ? hold : 80);
-    for (int i = 1; i <= DragSteps; i++) { PostMessage(target, 0x200, button, Pack(point.X + dx * i / DragSteps, point.Y + dy * i / DragSteps)); Thread.Sleep(20); }
+    for (int i = 1; i <= DragSteps; i++) {
+      PostMessage(target, 0x200, button, Pack(point.X + dx * i / DragSteps, point.Y + dy * i / DragSteps));
+      if (CursorSink != null) CursorSink(screen.X + dx * i / DragSteps, screen.Y + dy * i / DragSteps);
+      Thread.Sleep(20);
+    }
     PostMessage(target, up, IntPtr.Zero, Pack(point.X + dx, point.Y + dy));
   }
 
@@ -287,6 +306,7 @@ public static class Desk {
     var target = Under(top, ref point);
     var screen = new POINT { X = x, Y = y };
     ClientToScreen(top, ref screen);
+    if (CursorSink != null) CursorSink(screen.X, screen.Y);
     var at = Pack(screen.X, screen.Y);
     if (notchesUp != 0) PostMessage(target, 0x20A, Pack(0, notchesUp * 120), at);
     if (notchesRight != 0) PostMessage(target, 0x20E, Pack(0, notchesRight * 120), at);
@@ -574,6 +594,8 @@ public static class Sign {
   [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
   [DllImport("user32.dll")] static extern bool SetWindowDisplayAffinity(IntPtr h, uint affinity);
   [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
+  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
   [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref POINT at, ref SIZE size, IntPtr src, ref POINT from, int key, ref BLEND blend, int flags);
 
   /**
@@ -605,8 +627,8 @@ public static class Sign {
   public static StreamWriter Out;
   static readonly Color Blue = Color.FromArgb(64, 140, 255);
   static readonly ManualResetEvent ready = new ManualResetEvent(false);
-  static Layer capsule, glow;
-  static System.Windows.Forms.Timer follow, fade, breathe;
+  static Layer capsule, glow, pointer;
+  static System.Windows.Forms.Timer follow, fade, breathe, pointerFade;
   static HookProc hook;
   static IntPtr target = IntPtr.Zero;
   static bool active;
@@ -618,6 +640,11 @@ public static class Sign {
   /** Where its body (the capsule without the shadow) landed. */
   static Rectangle placedBody = Rectangle.Empty;
   static Rectangle glowAt = Rectangle.Empty;
+  // The DSH pointer: background input is posted to a window without moving the real mouse, so the helper draws its own.
+  static Point pointerAt = Point.Empty;
+  static IntPtr pointerTarget = IntPtr.Zero;
+  static Rectangle pointerBounds = Rectangle.Empty;
+  static bool pointerVisible;
   static long lastEscape;
   static double scale = 1, phase;
   static int S(double v) { return (int)Math.Round(v * scale); }
@@ -840,6 +867,93 @@ public static class Sign {
   }
   static string Hex(Color c) { return "#" + c.A.ToString("X2") + c.R.ToString("X2") + c.G.ToString("X2") + c.B.ToString("X2"); }
 
+  /** Draws the DSH cursor at a screen point for one background input. */
+  public static void Cursor(long hwnd, int x, int y) {
+    OnUi(delegate {
+      if (pointer == null) return;
+      pointerTarget = new IntPtr(hwnd);
+      pointerAt = new Point(x, y);
+      DrawPointer();
+      FollowPointer();
+      if (pointerVisible) { follow.Start(); pointerFade.Stop(); pointerFade.Start(); }
+    });
+  }
+  static void HidePointer() {
+    if (pointer == null) return;
+    if (pointer.Visible) pointer.Hide();
+    pointerVisible = false;
+    if (pointerFade != null) pointerFade.Stop();
+  }
+  /** The cursor is part of the target's layer: below anything covering the target window, above the target itself. */
+  static void FollowPointer() {
+    if (pointer == null || !pointerVisible) return;
+    if (pointerTarget != IntPtr.Zero) {
+      RECT r;
+      if (!IsWindow(pointerTarget) || !IsWindowVisible(pointerTarget) || IsIconic(pointerTarget) || !GetWindowRect(pointerTarget, out r)) { HidePointer(); return; }
+      // Insert the pointer just above the target window, so it stays below any app that is covering the target.
+      IntPtr after = GetWindow(pointerTarget, 3);
+      if ((GetWindowLong(pointerTarget, -20) & 0x8) != 0) { if (after == IntPtr.Zero) after = new IntPtr(-1); }
+      else if (after != IntPtr.Zero && (GetWindowLong(after, -20) & 0x8) != 0) after = IntPtr.Zero;
+      SetWindowPos(pointer.Handle, after, 0, 0, 0, 0, 0x13);
+    } else {
+      SetWindowPos(pointer.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13);
+    }
+  }
+  static void DrawPointer() {
+    if (pointer == null) return;
+    if (pointerTarget != IntPtr.Zero && (!IsWindow(pointerTarget) || !IsWindowVisible(pointerTarget) || IsIconic(pointerTarget))) { HidePointer(); return; }
+    var area = Screen.FromPoint(pointerAt).Bounds;
+    float zoom = Math.Max(1f, Math.Min(3f, (float)scale));
+    bool left = area.Right - pointerAt.X < (int)((120 - 24) * zoom);
+    bool up = area.Bottom - pointerAt.Y < (int)((84 - 18) * zoom);
+    using (var picture = PointerPicture(zoom, left, up)) {
+      int width = picture.Width, height = picture.Height;
+      int hotX = (int)Math.Round((left ? 96 : 24) * zoom), hotY = (int)Math.Round((up ? 60 : 24) * zoom);
+      pointerBounds = new Rectangle(pointerAt.X - hotX, pointerAt.Y - hotY, width, height);
+      pointer.Put(picture, pointerBounds.Location);
+    }
+    pointer.TopMost = pointerTarget == IntPtr.Zero;
+    if (!pointer.Visible) pointer.Show();
+    pointerVisible = true;
+  }
+  /** A system arrow with a DSH tag beside it and a soft spot where it points; hotspots: 24,24 or 96,60. */
+  static Bitmap PointerPicture(float zoom, bool left, bool up) {
+    int width = (int)Math.Ceiling(120 * zoom), height = (int)Math.Ceiling(84 * zoom);
+    var picture = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+    using (var g = Graphics.FromImage(picture)) {
+      g.Clear(Color.Transparent);
+      g.SmoothingMode = SmoothingMode.AntiAlias;
+      g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+      g.ScaleTransform(zoom, zoom);
+      float x = left ? 96 : 24, y = up ? 60 : 24;
+      using (var path = new GraphicsPath()) {
+        path.AddEllipse(x - 26, y - 26, 52, 52);
+        using (var brush = new PathGradientBrush(path)) {
+          brush.CenterColor = Color.FromArgb(80, Blue);
+          brush.SurroundColors = new Color[] { Color.FromArgb(0, Blue) };
+          g.FillPath(brush, path);
+        }
+      }
+      var size = SystemInformation.CursorSize;
+      Cursors.Default.Draw(g, new Rectangle((int)Math.Round(x), (int)Math.Round(y), size.Width, size.Height));
+      string tag = "DSH";
+      using (var font = new Font("Segoe UI", 10, FontStyle.Bold, GraphicsUnit.Pixel)) {
+        var measure = g.MeasureString(tag, font);
+        float w = Math.Max(26, measure.Width + 10), hgt = 19;
+        float bx = left ? x - w - 10 : x + 14;
+        float by = up ? y - hgt - 10 : y + 18;
+        using (var path = Round(new RectangleF(bx, by, w, hgt), 6)) {
+          using (var fill = new SolidBrush(Blue)) g.FillPath(fill, path);
+          using (var pen = new Pen(Color.FromArgb(215, 255, 255, 255), 1.2f)) g.DrawPath(pen, path);
+        }
+        using (var text = new SolidBrush(Color.White))
+        using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+          g.DrawString(tag, font, text, new RectangleF(bx, by - 1, w, hgt + 1), format);
+      }
+    }
+    return picture;
+  }
+
   /** What the last sign looks like, for the server's checks (op "status"). */
   public static Hashtable Status() {
     var bounds = new Hashtable();
@@ -859,6 +973,10 @@ public static class Sign {
     h["signPosition"] = stylePosition; h["signAlign"] = styleAlign;
     h["signWidth"] = styleWidth; h["signHeight"] = styleHeight;
     h["signVisible"] = active;
+    h["cursorVisible"] = pointerVisible;
+    var cursor = new Hashtable();
+    cursor["x"] = pointerBounds.X; cursor["y"] = pointerBounds.Y; cursor["width"] = pointerBounds.Width; cursor["height"] = pointerBounds.Height;
+    h["cursorBounds"] = cursor;
     return h;
   }
 
@@ -932,6 +1050,7 @@ public static class Sign {
   }
   /** A soft blue glow with rounded corners just around the window; kept just above it, so under whatever covers it. */
   static void Follow() {
+    FollowPointer();
     RECT r;
     int spread = S(9);
     // No window: foreground mode, where the agent has the whole screen; the glow runs just inside its edge.
@@ -990,15 +1109,18 @@ public static class Sign {
       capsule = new Layer { FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual, TopMost = true, ShowInTaskbar = false, Cursor = Cursors.Hand };
       capsule.MouseUp += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left && button.Contains(e.Location)) Halt(); };
       glow = new Layer { Through = true, FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual, ShowInTaskbar = false };
-      var made = capsule.Handle; made = glow.Handle;
+      pointer = new Layer { Through = true, FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual, ShowInTaskbar = false };
+      var made = capsule.Handle; made = glow.Handle; made = pointer.Handle;
       // WDA_EXCLUDEFROMCAPTURE: the agent's screenshots of the screen do not show the sign over what the agent is looking at.
-      captureExcluded = SetWindowDisplayAffinity(capsule.Handle, 0x11); SetWindowDisplayAffinity(glow.Handle, 0x11);
+      captureExcluded = SetWindowDisplayAffinity(capsule.Handle, 0x11); SetWindowDisplayAffinity(glow.Handle, 0x11); SetWindowDisplayAffinity(pointer.Handle, 0x11);
       follow = new System.Windows.Forms.Timer { Interval = 150 };
       follow.Tick += delegate { try { Follow(); } catch { } };
       breathe = new System.Windows.Forms.Timer { Interval = 50 };
       breathe.Tick += delegate { if (!active) return; phase += 0.12; try { DrawCapsule(); } catch { } };
       fade = new System.Windows.Forms.Timer { Interval = 2500 };
       fade.Tick += delegate { fade.Stop(); if (!active) { capsule.Hide(); follow.Stop(); breathe.Stop(); } };
+      pointerFade = new System.Windows.Forms.Timer { Interval = 5000 };
+      pointerFade.Tick += delegate { pointerFade.Stop(); HidePointer(); };
       hook = Keys;
       SetWindowsHookEx(13, hook, GetModuleHandle(null), 0);
     } finally { ready.Set(); }
@@ -1020,6 +1142,8 @@ public static class Sign {
       fade.Stop();
       var next = new IntPtr(hwnd);
       if (next != target) { glow.Hide(); glowAt = Rectangle.Empty; target = next; }
+      if (next != pointerTarget) { if (pointerVisible) HidePointer(); pointerTarget = next; }
+      if (pointerVisible) { pointerFade.Stop(); pointerFade.Start(); }
       // Set every time: the elevated helper's first sign is on the whole screen, which is no change from where it starts.
       glow.TopMost = target == IntPtr.Zero;
       name = who; hint = help; stopText = stop; stoppedText = stopped;
@@ -1034,7 +1158,7 @@ public static class Sign {
   }
   public static void Hide() {
     if (capsule == null) return;
-    OnUi(delegate { if (!active) return; active = false; Follow(); capsule.Hide(); follow.Stop(); breathe.Stop(); });
+    OnUi(delegate { if (!active) return; active = false; FollowPointer(); HidePointer(); Follow(); capsule.Hide(); follow.Stop(); breathe.Stop(); });
   }
 }
 '@
@@ -1125,6 +1249,12 @@ public static class Flash {
   return @{ flashes = @([Flash]::Take()) }
 }
 
+function UseCursor([long]$hwnd) {
+  if (-not $script:signLoaded) { Sign @{ show = $false } | Out-Null }
+  [Desk]::CursorHwnd = $hwnd
+  [Desk]::CursorSink = [Action[int,int]]{ param($x, $y) [Sign]::Cursor([Desk]::CursorHwnd, [int]$x, [int]$y) }
+}
+
 function Run($op, $a) {
   switch ($op) {
     'windows' { return @{ windows = @([Desk]::Windows()); foreground = [Desk]::Foreground() } }
@@ -1141,9 +1271,9 @@ function Run($op, $a) {
     # ShellExecute: the browser fetches the page itself; no synthetic keys into Chromium.
     'url' { Start-Process -FilePath ([string]$a.url); return @{} }
     'shot' { return [Desk]::Shot([long]$a.hwnd, [string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int]$a.markX, [int]$a.markY) }
-    'click' { [Desk]::Click([long]$a.hwnd, [int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
-    'scroll' { [Desk]::Scroll([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
-    'move' { [Desk]::Move([long]$a.hwnd, [int]$a.x, [int]$a.y); return @{} }
+    'click' { UseCursor([long]$a.hwnd); [Desk]::Click([long]$a.hwnd, [int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
+    'scroll' { UseCursor([long]$a.hwnd); [Desk]::Scroll([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
+    'move' { UseCursor([long]$a.hwnd); [Desk]::Move([long]$a.hwnd, [int]$a.x, [int]$a.y); return @{} }
     'close' { [Desk]::Close([long]$a.hwnd); return @{} }
     'openfile' { Start-Process -FilePath ([string]$a.file); return @{} }
     'type' { [Desk]::Type([long]$a.hwnd, [string]$a.text, [int]$a.delay); return @{} }
@@ -1153,7 +1283,7 @@ function Run($op, $a) {
     'tray' { return @{ result = [Desk]::Tray([string]$a.name); cursor = [Desk]::Cursor() } }
     'cursor' { return @{ cursor = [Desk]::Cursor() } }
     'screen' { return [Desk]::Screen([string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int]$a.markX, [int]$a.markY) }
-    'drag' { [Desk]::Drag([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
+    'drag' { UseCursor([long]$a.hwnd); [Desk]::Drag([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
     'rdrag' { [Desk]::RealDrag([int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
     'rclick' { [Desk]::RealClick([int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
     'rtype' { [Desk]::RealType([string]$a.text, [int]$a.delay); return @{} }
