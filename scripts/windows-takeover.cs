@@ -377,10 +377,11 @@ namespace DshTakeover {
     readonly HashSet<int> physicalDown = new HashSet<int>(), swallowed = new HashSet<int>();
     string stopShortcut = "";
     int stopKey, stopModifiers;
-    // Pressing the stop gesture once only arms it; the second press inside this
-    // window stops the turn. Two separate presses are needed because a held key
-    // never leaves the swallowed set until it is released.
-    const long StopPressWindowMs = 600;
+    // Pressing the stop gesture once only arms it; the second press within half
+    // a second stops the turn, the same window the desktop sign uses. Two separate
+    // presses are needed because a held key never leaves the swallowed set until
+    // it is released.
+    const long StopPressWindowMs = 500;
     int stopPressKey = -1; long stopPressAt = -1;
     DateTime hideAt = DateTime.MaxValue;
     bool indicator = true, cursorIndicator = true, remoteVisible = true;

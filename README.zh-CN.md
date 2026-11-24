@@ -247,7 +247,7 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 
 前台模式在整个会话里接管真实鼠标键盘，并把它操作的程序带到最前，回合结束后那个窗口仍在最前；只适合不接受其它方式的程序。
 
-**停止。** 在 600 毫秒内连按两下 Esc，或点浮窗胶囊上的停止按钮。之后数据目录里会留下 `desktop-stopped` 文件，所有桌面操作都被拒绝，直到执行 `evolution-computer-use-win resume` 才恢复。运行中的调用被叫停后，会在下一步生效。
+**停止。** 在半秒内连按两下 Esc，或点 Agent 工作时屏幕上横幅里的「停下」按钮。之后数据目录里会留下 `desktop-stopped` 文件，所有桌面操作都被拒绝，直到执行 `evolution-computer-use-win resume` 才恢复。运行中的调用被叫停后，会在下一步生效。
 
 ## 思考浮窗
 

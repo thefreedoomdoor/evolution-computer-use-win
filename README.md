@@ -245,7 +245,7 @@ Background mode in detail:
 
 Foreground mode takes the real mouse and keyboard for the whole session and brings the program it works in to the front; that window stays in front afterwards. It is meant for programs that refuse anything else.
 
-**Stopping.** Press Esc twice within 600 ms, or click the stop button on the overlay capsule. The `desktop-stopped` file then stays in the data folder, every desktop operation is refused, and nothing resumes until `evolution-computer-use-win resume` clears it. A stop during a running call takes effect at the next step.
+**Stopping.** Press Esc twice within half a second, or click the stop button on the banner the agent shows while it works. The `desktop-stopped` file then stays in the data folder, every desktop operation is refused, and nothing resumes until `evolution-computer-use-win resume` clears it. A stop during a running call takes effect at the next step.
 
 ## Thought overlay
 
