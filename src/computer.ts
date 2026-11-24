@@ -14,6 +14,8 @@ import { createInbox } from './inbox/inbox.ts';
 import { createAudit, type AuditSink } from './audit.ts';
 import { readAppearance } from './appearance.ts';
 import { matchAppPolicy, readAppPolicies, type PolicyTarget } from './policies.ts';
+import { loadIndex, resolveApp } from './apps/index.ts';
+import { runInit, hasInitReport, indexMissing, type InitReport } from './init.ts';
 
 /** A helper as the module uses it; only foreground mode's is started ahead of use. */
 type Hands = Pick<DesktopDriver, 'call' | 'running' | 'stop'> & Partial<Pick<DesktopDriver, 'start'>>;
@@ -131,6 +133,10 @@ export function createComputerUse(options: ComputerUseOptions) {
     if (cached?.revision === current) return cached.tools;
     const list = computerTools({
       browser, library, ...(messages ? { messages } : {}), routines: () => routines(), health: () => faults.list(),
+      init: async input => {
+        const report = await init(input);
+        return `${report.ok ? '初始化完成，全部通过。' : '初始化完成，有失败项。'}\n报告：${report.reportMarkdown ?? report.reportJson ?? '（没有写报告）'}`;
+      },
       mode: desktopMode, setMode: setDesktopMode, pick,
       ...(desktopUse ? { desktop: desktopUse.desktop } : {}), ...(desktopUse?.foreground ? { screen: desktopUse.foreground.screen } : {}),
       ...(desktopUse?.inbox ? { inbox: readMail } : {}),
@@ -161,6 +167,8 @@ export function createComputerUse(options: ComputerUseOptions) {
     // The agent's own browser (CDP) opens the page behind everything else, so opening a URL never takes the user's focus.
     const desktop = createDesktop({
       driver, companion, signFault, audit: audited,
+      // 软件位置表只在启动时才有，读不到就让 launch 回到开始菜单那条旧路。
+      apps: { resolve: name => { try { const index = loadIndex(options.dataDir); return index ? resolveApp(name, index) : undefined; } catch { return undefined; } } },
       browse: url => browser.run(async page => {
         await page.open(url);
         const title = await page.evaluate('return document.title', {});
@@ -274,8 +282,39 @@ export function createComputerUse(options: ComputerUseOptions) {
     } catch { /* 审计坏了也不能弄坏一次工具调用 */ }
   }
 
+  /** 用户主动 init：临时把桌面控制打开（不启动助手），这样桌面自测也有东西可测。 */
+  async function init(opts: { full?: boolean; selftest?: boolean; allowNetwork?: boolean } = {}): Promise<InitReport> {
+    const was = desktopUse !== undefined;
+    if (!was) setDesktop(true);
+    try {
+      return await runInit({
+        dataDir: options.dataDir, browser, ...(desktopUse ? { desktop: desktopUse.desktop } : {}),
+        full: opts.full ?? true, selftest: opts.selftest ?? true, allowNetwork: opts.allowNetwork, report: 'init', log: options.log,
+      });
+    } finally {
+      if (!was) setDesktop(false);
+    }
+  }
+  /** DSH 每次启动时跑：总是增量扫描；第一次（还没有 init 报告）补一次完整扫描和自测。 */
+  async function autoInit(): Promise<InitReport | undefined> {
+    if (process.env.EVOLUTION_CU_NO_AUTO_INIT === '1') return undefined;
+    const first = indexMissing(options.dataDir) || !hasInitReport(options.dataDir);
+    options.log?.(first ? '第一次启动：完整扫描软件位置并自测…' : '启动检查：增量扫描软件位置…');
+    try {
+      return await runInit({
+        dataDir: options.dataDir, browser, ...(desktopUse ? { desktop: desktopUse.desktop } : {}),
+        full: first, selftest: first, allowNetwork: false, report: 'startup', log: options.log,
+      });
+    } catch (error) {
+      options.log?.(`启动检查失败：${errorText(error)}`);
+      return undefined;
+    }
+  }
+
   return {
     faults, library,
+    init,
+    autoInit,
     /** The tools as they stand now; the list changes only with the user's switches. */
     tools,
     /** Runs one tool by name. A failure rejects with the reason the agent should read. */

@@ -10,8 +10,9 @@
 面向 **DeepSeek Harness** 的电脑操作能力，通过模型上下文协议（stdio）提供：Agent 先自己摸索出某个网站或桌面程序怎么用，把过程存成操作，之后直接重放，不必每次都重新探索。
 
 - 网页操作，以及在 Windows 上的后台桌面操作。
+- `init` 生成的软件位置表：每个程序装在哪，加密保存，每次启动刷新，说「打开微信」不再需要你给路径。
 - 学会的操作是普通 JSON 文件：有版本、可修补、多个 Agent 之间可共享。
-- 一个 Node 进程，零运行时依赖，不需要另装任何东西。
+- 一次安装 DSH 插件，同时装上 MCP 服务与设置界面，一个 Node 进程、零运行时依赖。
 
 ## 目录
 
@@ -43,6 +44,9 @@
 | **工作时看得见** | Agent 在这台电脑上操作期间，屏幕顶部有一条横幅写着「DSH正在操作{app}」并带「停下」按钮。文字、大小、位置、颜色、字体、排版都可以改。 |
 | **每个动作都有理由** | 思考浮窗左边还有一块审计浮窗，逐条列出点击、滚动、双击、右键、键盘组合、开关程序与截图，后面跟着 Agent 给这一步的理由；同样的记录还会按天写进审计文件。 |
 | **按应用的前后台策略** | 可以只让某个程序走前台，其余仍留在后台。窗口选择器帮你填好规则，后台规则还能让这个程序不再需要整屏截图。 |
+| **知道你程序在哪** | `init` 扫开始菜单、App Paths、卸载表与 Program Files，结果加密存进 `apps-index.enc`，每次 DSH 启动刷新。`打开微信` 不再需要你提供路径。 |
+| **第一次启动就自测** | 第一次启动还会用浏览器工具跑一个本地页面、用桌面工具操作一个临时 WinForms 窗口，然后把 `init-report.json` 和一份带每步截图的 `.md` 写下来。随时可以 `evolution-computer-use-win init` 重跑。 |
+| **一次安装，两半都有** | 装 DSH 插件时同时注册 stdio MCP 服务与设置界面，不需要再装配套插件。 |
 | **会自愈的修补** | 重放失败时退回最近两个保存过的版本；结果会做检查，失效的选择器会当场报错，而不是显示「已完成」。 |
 | **可审计** | 每个操作都是可读的文件，每次改动都留下旧版本，每个桌面动作都经过一条可见、可停的通道。 |
 
@@ -53,12 +57,14 @@
 | **系统** | Windows 10 或 11。两部分都依赖它：找浏览器是在 Windows 安装目录里找 `msedge.exe` / `chrome.exe`，桌面控制也只有 Windows 版。 |
 | **Node.js** | 22.16.0 或更高。除本包以外不需要装任何东西。 |
 | **浏览器** | 默认安装在 Windows 上的 Microsoft Edge 或 Google Chrome。Agent 会用独立配置启动自己的实例。 |
-| **宿主** | 任何 stdio MCP 宿主都能跑通协议，但只为 **DeepSeek Harness** 做了适配。配套插件 `dsh-evolution-desktop-mode` 提供桌面模式开关、操作横幅、思考与审计浮窗，以及按应用策略的编辑界面。 |
+| **宿主** | **DeepSeek Harness**，需要支持插件。本项目本身就是一个 DSH 插件包：同一次安装同时加上设置页并注册自带的 MCP 服务。未适配其他 Agent 应用。 |
 | **权限** | 后台桌面操作不需要；前台模式需要管理员权限，会弹出 UAC。 |
 
 ## 安装
 
-### 从源码（当前可用的方式）
+### 作为 DSH 插件（推荐）
+
+先把源码编译一次：
 
 ```powershell
 git clone https://github.com/thefreedoomdoor/evolution-computer-use-win
@@ -67,30 +73,19 @@ npm install
 npm run build
 ```
 
-npm 包 `evolution-computer-use-win` 尚未发布；发布之后 `npx -y evolution-computer-use-win` 可以替代上面的 clone 步骤。
+然后把整个目录作为 DSH 插件包装上：打开 **设置 → 插件 → 从文件夹安装**，选择这个目录。在 Agent 会话里，也可以用 `plugin_manager` 的 `action: "install_bundle"` 并传绝对路径。一次安装就同时加上设置页并自动注册 MCP 服务——不需要再写 `mcpServers`，也不需要配套插件。
 
-### DeepSeek Harness
+如果之前装过独立的 `dsh-evolution-desktop-mode` 插件，请先在插件管理里移除它：本包已经内置同一套设置页，两者使用相同的插件 id，不能并存。
 
-把服务加到 DSH 的 MCP 配置里，`command` 指向编译后的 CLI：
+安装后的第一次启动会在后台跑 `init`：扫描软件位置进加密表，并跑电脑操作自测、写报告（见[配置](#配置)）。随时可以运行 `evolution-computer-use-win init` 做一次完整检查。
 
-```json
-{
-  "mcpServers": {
-    "computer-use": {
-      "command": "node",
-      "args": ["C:/path/to/evolution-computer-use-win/lib/cli.js", "--desktop", "background"]
-    }
-  }
-}
-```
+npm 包 `evolution-computer-use-win` 尚未发布；发布之后 `npm install evolution-computer-use-win` 可以替代上面的 clone 与构建步骤。
 
-要看思考浮窗，再装配套插件 `dsh-evolution-desktop-mode`（见 [思考浮窗](#思考浮窗)）。不带 `--desktop` 时桌面控制默认关闭，Agent 之后可以用 `desktop_mode` 打开。
-
-> **未适配其他 Agent 应用。** MCP 服务本身与宿主无关，但只有 DSH 真正驱动它：浮窗的写侧是一个 DSH 插件，其它宿主都未验证。
+> **未适配其他 Agent 应用。** MCP 服务本身与宿主无关，但只有 DSH 真正驱动它：插件这一半、浮窗写侧和设置页都是 DSH 专用的，其它宿主都未验证。
 
 ## 快速开始
 
-1. 按上面的配置加好服务，重启宿主。
+1. 按上面的说明装好插件，重启 DSH。第一次启动会扫描软件并跑自测；之后随时可以让 Agent 运行 `init` 重跑。
 2. 用日常说法提要求，例如「看看我 B 站有没有新私信」。
 3. Agent 调 `computer_use("B站")` 取这个分类的说明，用 `page_*` 工具操作页面，回答，并把跑通的步骤存下来：
 
@@ -107,11 +102,12 @@ procedure_save({ ... })                  → bilibili/看未读.json
 ## 配置
 
 ```text
-evolution-computer-use-win [serve|resume|routines|status] [选项]
+evolution-computer-use-win [init|serve|resume|routines|status] [选项]
 ```
 
 | 命令 | 作用 |
 | --- | --- |
+| `init` | 扫描软件位置并跑电脑操作自测，然后打印 Markdown 报告（`--json` 输出 JSON）。这是完整扫描；插件第一次启动时也会自动做。 |
 | `serve` | 默认。以 stdio 运行 MCP 服务。 |
 | `resume` | 解除紧急停止，让桌面控制重新可用。 |
 | `routines` | 把每个 `onAlarm` 操作跑一遍，供定时任务调用。 |
@@ -128,7 +124,12 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 | `--no-inbox` | 关 | 不监视任务栏与通知。 |
 | `--no-messages` | 关 | 不写 `messages.jsonl`。 |
 | `--no-overlay` | 关 | 完全不启动浮窗助手。 |
+| `--skip-selftest` | 关 | `init` 时只扫描，不跑自测。 |
+| `--network` | 关 | `init` 自测允许访问外网；默认只用本地页面。 |
+| `--json` | 关 | `init` 以 JSON 打印结果。 |
 | `-h`、`--help` | | 打印用法。 |
+
+`EVOLUTION_CU_NO_AUTO_INIT=1` 会跳过服务启动时的自动扫描与自测；宿主想自己管理 `init` 时用。
 
 首次运行后的数据目录：
 
@@ -140,6 +141,10 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 │  ├─ bilibili/看未读.v2.json   保留的上一版
 │  └─ bilibili/目录.md          该分类的说明，≤ 1000 字符
 ├─ messages.jsonl            抽取出的消息，一行一条
+├─ apps-index.enc            加密的软件位置表
+├─ init-report.json          最近一次完整 init 报告（另有 init-report.md）
+├─ startup-report.json       最近一次启动扫描与自测结果
+├─ selftest/                 自测截图
 ├─ desktop-mode.json         DSH 插件写入，每 0.8 秒读取一次
 ├─ activity.json             浮窗内容，由 DSH 插件写入
 ├─ activity-settings.json    浮窗的位置、大小、不透明度、锁定
@@ -172,6 +177,7 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 | | `procedure_save` | 把跑通的步骤存成操作；不带 `json` 时返回完整格式说明。 |
 | | `procedure_note` | 写某个分类的说明：对应哪个程序或网站、网址与别称、注意事项。 |
 | | `procedure_routines` | 把每个 `onAlarm` 网页操作各跑一次，各用单独的标签页。 |
+| 初始化 | `init` | 扫描软件位置进加密表，并跑电脑操作自测，返回报告。第一次启动时自动运行。 |
 | 信箱 | `inbox_read` | 报告有什么在等着：任务栏闪烁与系统通知。仅在信箱开启时可用。 |
 
 工具清单在服务启动后固定，只有一个例外：切换桌面模式会让 `desktop` 工具出现或消失，此时服务发 `notifications/tools/list_changed`。`inbox_read` 是否存在由启动时的 `--no-inbox` 决定。学会新操作不会改变清单，因此存操作不会让宿主的 prompt cache 失效。
@@ -308,10 +314,10 @@ Agent 在这台电脑上干活时最多会出现三块窗口：顶部一条操�
 
 | 半边 | 在哪 | 作用 |
 | --- | --- | --- |
-| 写侧 | DSH 插件 `dsh-evolution-desktop-mode` | 订阅 DSH 的 `agent/assistant-stream`、`session/event`、`tools/execute`，把思考、回复、步骤原子写入。 |
+| 写侧 | 本包内置的 DSH 插件（`plugin/lib/index.js`） | 订阅 DSH 的 `agent/assistant-stream`、`session/event`、`tools/execute`，把思考、回复、步骤原子写入。 |
 | 读侧 | 本包 `src/desktop/overlay.ts` | 每秒读一次 `activity.json`，喂给 `scripts/windows-takeover.ps1` 画出的 WinForms 浮窗。 |
 
-之所以拆成两半，是因为单纯的 stdio MCP 服务看不到宿主的会话事件。换别的宿主，只需要自己补上写侧。`--no-overlay` 会跳过整块子系统。
+之所以拆成两半，是因为单纯的 stdio MCP 服务看不到宿主的会话事件；写侧由本包的插件部分提供。`--no-overlay` 会跳过整块子系统。
 
 ## 信箱
 
@@ -328,6 +334,10 @@ Agent 在这台电脑上干活时最多会出现三块窗口：顶部一条操�
 | `<data>/browser/` | 浏览器配置，含 Agent 的登录态。不要共享、同步或提交。 |
 | `<data>/procedures/` | 学会的操作与分类说明。 |
 | `<data>/messages.jsonl` | 抽取出的消息。 |
+| `<data>/apps-index.enc` | 加密的软件位置表（`apps-index.enc` 文件头，AES-256-GCM）。文件被删或损坏时，下次扫描会重建。 |
+| `<data>/init-report.json` / `.md` | 最近一次完整 `init` 的报告。 |
+| `<data>/startup-report.json` | 最近一次自动启动扫描与自测的结果。 |
+| `<data>/selftest/` | 自测过程中截的图。 |
 | `<data>/desktop-mode.json` | DSH 插件固定写到 `~/.evolution-computer-use/desktop-mode.json`，`--data` 不会移动它；服务每 0.8 秒读一次。 |
 | `<data>/activity.json` | 浮窗显示的内容，插件写到同一个固定目录；要让服务读别处，设 `EVOCU_ACTIVITY_FILE`。 |
 | `<data>/activity-settings.json` | 浮窗的位置、大小、不透明度与锁定，由插件在固定目录里读写。 |
@@ -365,7 +375,7 @@ npm test             # node --test
 npm run build        # 输出到 lib/
 ```
 
-测试共 196 个用例（194 通过、2 跳过），覆盖 MCP 协议、操作格式与操作库、外观与策略解析、审计记录，以及用假 shell 测的桌面驱动。`npm run prepack` 会在发布前跑类型检查与构建。
+测试共 220 个用例（218 通过、2 跳过），覆盖 MCP 协议、操作格式与操作库、外观与策略解析、审计记录，以及用假 shell 测的桌面驱动。`npm run prepack` 会在发布前跑类型检查与构建。
 
 ## 设计说明
 

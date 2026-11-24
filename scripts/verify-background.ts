@@ -62,6 +62,10 @@ async function main(): Promise<number> {
   const desktop = createDesktop({ driver, running: async () => false });
   let pid = 0, hwnd = 0, ownerPid = 0, named = 'notepad.exe';
   try {
+    // 启动记事本之前先记住用户原来的前台窗口：Start-Process 会让记事本自己冒到前面，
+    // 启动后再读前台只会读到记事本，等于没有还原，取样基线就会把记事本当成「本来就是前台」。
+    const beforeLaunch = await driver.call('windows');
+    let original = Number(beforeLaunch.foreground ?? 0);
     // 记事本正常启动：程序自己会出现在前面，这是程序的行为；随后把用户原来的窗口交还到最前，再开始取样。
     const launched = await run('powershell.exe', ['-NoProfile', '-Command',
       '$p = Start-Process -FilePath notepad.exe -PassThru; $p.Id']);
@@ -77,7 +81,13 @@ async function main(): Promise<number> {
       await wait(150);
     }
     if (!hwnd) throw new Error('没找到记事本窗口（pid=' + pid + '）');
-    const original = Number((await driver.call('windows')).foreground ?? 0);
+    // 启动前没有前台窗口（例如桌面）或前台恰好是残留的记事本时，挑一个别的窗口当参照。
+    if (!original || original === hwnd) {
+      const windows = await driver.call('windows');
+      const list = (windows.windows as { hwnd: number; pid: number; visible?: boolean }[] | undefined) ?? [];
+      const other = list.find(entry => entry.hwnd !== hwnd && entry.pid !== pid && entry.visible !== false);
+      original = other?.hwnd ?? 0;
+    }
     if (original && original !== hwnd) await driver.call('refocus', { hwnd: original }).catch(() => ({}));
     await wait(400);
 

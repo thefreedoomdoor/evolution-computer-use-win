@@ -91,7 +91,7 @@ test('toContent leaves out captions that are not there', () => {
 });
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
-const node = (args: string[]) => spawn(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', CLI, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+const node = (args: string[]) => spawn(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', CLI, ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, EVOLUTION_CU_NO_AUTO_INIT: '1' } });
 function run(args: string[]): Promise<{ code: number | null; out: string }> {
   return new Promise(resolve => {
     const child = node(args); let out = '';
@@ -108,7 +108,7 @@ test('the CLI serves MCP over stdio: an agent learns a procedure, finds it again
   assert.match((init.result as { instructions: string }).instructions, /computer_use/);
   one.c.notify('notifications/initialized');
   const names = ((await one.c.request('tools/list')).result as { tools: { name: string }[] }).tools.map(tool => tool.name);
-  assert.deepEqual(names, ['page_open', 'page_read', 'page_click', 'page_type', 'page_press', 'page_scroll', 'page_wait', 'page_shot', 'page_eval', 'computer_use', 'procedure_run', 'procedure_save', 'procedure_note', 'procedure_routines', 'desktop_mode'], 'no desktop action unless the user turns it on; desktop_mode is listed so the agent can turn it on');
+  assert.deepEqual(names, ['page_open', 'page_read', 'page_click', 'page_type', 'page_press', 'page_scroll', 'page_wait', 'page_shot', 'page_eval', 'init', 'computer_use', 'procedure_run', 'procedure_save', 'procedure_note', 'procedure_routines', 'desktop_mode'], 'no desktop action unless the user turns it on; desktop_mode is listed so the agent can turn it on');
   const text = async (c: ReturnType<typeof client>, name: string, args: object) => ((await c.request('tools/call', { name, arguments: args })).result as { content: { text: string }[] }).content[0]!.text;
   assert.match(await text(one.c, 'procedure_save', { json: JSON.stringify({ name: '看首页', category: 'example', description: '打开首页', params: {}, steps: [{ open: 'https://example.com/' }, { check: { text: 'Example' } }] }) }), /^已保存 example\/看首页（第 1 版）/);
   assert.match(await text(one.c, 'procedure_note', { category: 'example', text: '网站：example.com（示例站）' }), /已写好 example 的说明/);

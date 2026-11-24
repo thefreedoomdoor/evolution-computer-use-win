@@ -40,6 +40,8 @@ export interface ToolsDeps {
   routines(): Promise<string | undefined>;
   /** What the inbox gathered since it was last read; absent when the inbox is off. */
   inbox?(): string | undefined;
+  /** 第一次使用或用户要求时：扫描软件位置并自测，返回一份报告的文字。 */
+  init?(input: { full?: boolean; selftest?: boolean }): Promise<string>;
   /** What is broken right now, said when the agent asks what it can use. */
   health(): string[];
 }
@@ -92,6 +94,8 @@ export function computerTools(deps: ToolsDeps): ToolSpec[] {
       execute: async ({ script }) => run(async p => cut(JSON.stringify(await p.evaluate(script, {})) ?? 'null', 2000)) }),
   ];
   const procedures: ToolSpec[] = [
+    ...(deps.init ? [defineTool({ name: 'init', description: '第一次使用，或用户要求重新检查时：扫描这台电脑里的软件位置（加密保存，之后打开程序不用用户再报路径）并自测电脑操作能不能完成，返回一份报告。平时不用调；每次启动会自动做增量检查。', parameters: { full: { type: 'boolean', description: '完整重新扫描（默认整合已有结果做增量）' }, selftest: { type: 'boolean', description: '顺便跑自测（默认跑）' }, reason: REASON },
+      execute: async ({ full, selftest }) => deps.init!({ ...(full === undefined ? {} : { full }), ...(selftest === undefined ? {} : { selftest }) }) })] : []),
     defineTool({ name: 'computer_use', description: '用电脑之前先说这次要用的程序或网站（target 只写对象，比如「微信」「B站」，不写要做的事），返回这一类的说明、学会的操作名和文件所在的文件夹；要看某个操作的参数和步骤就读它的文件。不说就列出现在能用的模块、学会的操作有哪些分类，以及哪里坏了。', parameters: { target: { type: 'string' }, reason: REASON },
       // Asked without naming anything, the agent is first told which modules it has right now, and what is broken.
       execute: async ({ target }) => target?.trim() ? catalogText(deps.library, target) : [modules(), catalogText(deps.library), health()].filter(Boolean).join('\n') }),

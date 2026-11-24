@@ -240,6 +240,8 @@ public static class Desk {
     // A long press is one press, held: the button stays down until the time is up.
     if (hold > 0) { PostMessage(target, down, button, at); Thread.Sleep(hold); PostMessage(target, up, IntPtr.Zero, at); return; }
     for (int i = 0; i < count; i++) { PostMessage(target, i == 1 ? twice : down, button, at); PostMessage(target, up, IntPtr.Zero, at); }
+    // The target handles the messages a moment later; give it that moment before the next step reads the window.
+    Thread.Sleep(40);
   }
 
   /** Steps a drag takes between its two ends: enough that programs see the pointer travel, not jump. */
@@ -287,6 +289,8 @@ public static class Desk {
     uint thread;
     var to = Focused(Live(hwnd), out thread);
     foreach (char c in text) PostMessage(to, 0x102, new IntPtr(c), new IntPtr(1));
+    // Characters are posted, not typed; let the control take them before a click reads its text.
+    Thread.Sleep(60);
   }
 
   static int Left(int modifier) { return modifier == 0x11 ? 0xA2 : modifier == 0x10 ? 0xA0 : 0xA4; }
@@ -905,7 +909,7 @@ public static class Sign {
       placedBody = new Rectangle(atX + (int)body.X, atY + (int)body.Y, (int)body.Width, (int)body.Height);
     }
   }
-  /** A soft blue glow with rounded corners just around the window; owned by it, so above it and under whatever covers it. */
+  /** A soft blue glow with rounded corners just around the window; kept just above it, so under whatever covers it. */
   static void Follow() {
     RECT r;
     int spread = S(9);
@@ -936,6 +940,8 @@ public static class Sign {
     // A full-screen game is often always-on-top too and comes back over the sign each time the agent clicks into it:
     // while the agent is on the whole screen, the sign is put back on top, without taking the focus.
     if (target == IntPtr.Zero) { SetWindowPos(glow.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13); SetWindowPos(capsule.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13); }
+    // Above that window only: another window covering it still covers the glow, as an owned window would be.
+    else { SetWindowPos(glow.Handle, target, 0, 0, 0, 0, 0x13); }
   }
   static void Halt() {
     if (!active) return;
@@ -992,7 +998,7 @@ public static class Sign {
     OnUi(delegate {
       fade.Stop();
       var next = new IntPtr(hwnd);
-      if (next != target) { glow.Hide(); glowAt = Rectangle.Empty; target = next; SetWindowLongPtr(glow.Handle, -8, target); }
+      if (next != target) { glow.Hide(); glowAt = Rectangle.Empty; target = next; }
       // Set every time: the elevated helper's first sign is on the whole screen, which is no change from where it starts.
       glow.TopMost = target == IntPtr.Zero;
       name = who; hint = help; stopText = stop; stoppedText = stopped;
@@ -1102,7 +1108,15 @@ function Run($op, $a) {
   switch ($op) {
     'windows' { return @{ windows = @([Desk]::Windows()); foreground = [Desk]::Foreground() } }
     'apps' { return @{ apps = @(Get-StartApps | ForEach-Object { @{ name = $_.Name; appId = $_.AppID } }) } }
-    'launch' { Start-Process "shell:AppsFolder\$($a.appId)"; return @{} }
+    'launch' {
+      if ($a.path) {
+        $start = @{ FilePath = [string]$a.path }
+        if ($a.args) { $start.ArgumentList = @([string]$a.args) }
+        Start-Process @start
+        return @{}
+      }
+      Start-Process "shell:AppsFolder\$($a.appId)"; return @{}
+    }
     # ShellExecute: the browser fetches the page itself; no synthetic keys into Chromium.
     'url' { Start-Process -FilePath ([string]$a.url); return @{} }
     'shot' { return [Desk]::Shot([long]$a.hwnd, [string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int]$a.markX, [int]$a.markY) }

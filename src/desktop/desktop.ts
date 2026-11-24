@@ -1,7 +1,8 @@
-import { readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bannerText, readAppearance } from '../appearance.ts';
+import type { AppEntry } from '../apps/index.ts';
 import type { AuditSink } from '../audit.ts';
 import type { DesktopDriver } from './driver.ts';
 import { isRunning } from './processes.ts';
@@ -88,6 +89,8 @@ export function createDesktop(deps: {
   lingerMs?: number;
   /** Opens the address in the agent's own browser (CDP, behind other windows) and returns the page title; nothing is typed into the user's windows. */
   browse?(url: string): Promise<string | undefined>;
+  /** 加密软件位置表：已知程序直接用 exe 路径启动，不必每次问开始菜单。 */
+  apps?: { resolve(name: string): AppEntry | undefined };
 }) {
   const running = deps.running ?? isRunning, settleMs = deps.settleMs ?? SETTLE_MS, appearMs = deps.appearMs ?? APPEAR_MS;
   let window: Window | undefined, view: View | undefined, shots = 0;
@@ -207,6 +210,16 @@ export function createDesktop(deps: {
     return { windows, told: `它收在托盘里，已经从托盘图标点开；${await giveBack(foreground)}${moved}\n` };
   }
   async function launch(name: string, foreground: number, before: Set<number>): Promise<{ windows: Listed[]; told: string }> {
+    // 软件位置表里有就用它：把完整的 exe 路径交给 Windows，比从开始菜单猜 appId 可靠，也不受语言影响。
+    const known = deps.apps?.resolve(name);
+    if (known?.exe && existsSync(known.exe)) {
+      const exe = known.exe.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '');
+      if (await running(exe)) throw new Error(`${known.name} 开着，但没有窗口，托盘里也找不到它的图标；再启动会多开一个，所以不启动。请用户把它打开。`);
+      await call('launch', { path: known.exe, args: known.args ?? '' });
+      const windows = await appear(known.name, exe, before);
+      if (!windows.length) throw new Error(`${known.name} 启动了，但 ${appearMs / 1000} 秒内没有出现窗口`);
+      return { windows, told: `${known.name} 没开，已经从软件位置表启动；${await giveBack(foreground)}\n` };
+    }
     const apps = ((await call('apps')).apps as { name: string; appId: string }[] | undefined) ?? [];
     const wanted = name.toLowerCase();
     const app = apps.find(entry => entry.name.toLowerCase() === wanted) ?? apps.find(entry => entry.name.toLowerCase().includes(wanted));

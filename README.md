@@ -8,8 +8,9 @@
 Computer use for **DeepSeek Harness** over the Model Context Protocol (stdio): the agent learns how to use a website or a desktop program, saves that as a procedure, and replays it later without spending model steps on discovery again.
 
 - Browser control and, on Windows, background desktop control.
+- A software index built by `init`: where every program lives, stored encrypted, refreshed on every start, so "open WeChat" never needs a pasted path.
 - Learned procedures are plain JSON files: versioned, repairable, shareable between agents.
-- One Node process, zero runtime dependencies, nothing else to install.
+- One DSH plugin installs both halves — the MCP server and the settings UI — on one Node process with zero runtime dependencies.
 
 ## Contents
 
@@ -41,6 +42,9 @@ Computer use for **DeepSeek Harness** over the Model Context Protocol (stdio): t
 | **Visible while it works** | A banner at the top of the screen says `DSH正在操作{app}` and carries a stop button for as long as the agent operates this computer. Wording, size, position, colors, fonts and spacing are yours to set. |
 | **Actions with reasons** | A second panel beside the thought panel lists every click, scroll, double or right click, key combination, program open or close and screenshot, each with the reason the agent gave. The same rows are kept in daily audit files. |
 | **Per-app foreground rules** | One program can be sent to foreground while everything else stays in background. A window picker fills the rule, and a background rule avoids whole-screen captures for that program. |
+| **Knows where your programs are** | `init` scans the Start menu, App Paths, uninstall entries and Program Files, keeps the result in an encrypted `apps-index.enc`, and refreshes it on every DSH start. `open WeChat` no longer needs a path from you. |
+| **Tested on first run** | The first start also drives a local page through the browser tools and a temporary WinForms window through the desktop tools, then writes `init-report.json` and a readable `.md` with a screenshot per step. Run it again any time with `evolution-computer-use-win init`. |
+| **One install, both halves** | Installing the DSH bundle registers the stdio MCP server and the settings UI together; there is no separate companion plugin. |
 | **Self-repair that keeps working** | Failed replays fall back to the last two saved versions, and results are checked so a broken selector fails loudly instead of reporting "done". |
 | **Auditable by design** | Every operation is a readable file, every change leaves an old version behind, and every desktop action passes through one visible, stoppable channel. |
 
@@ -51,12 +55,14 @@ Computer use for **DeepSeek Harness** over the Model Context Protocol (stdio): t
 | **OS** | Windows 10 or 11. Both halves depend on it: browser discovery looks for `msedge.exe` / `chrome.exe` under the Windows install roots, and desktop control is Windows-only. |
 | **Node.js** | 22.16.0 or newer. No package is installed beyond this one. |
 | **Browser** | Microsoft Edge or Google Chrome, with a default Windows install. The agent starts its own instance on its own profile. |
-| **Host** | Any stdio MCP host speaks the protocol; only **DeepSeek Harness** is adapted. The companion plugin `dsh-evolution-desktop-mode` adds the desktop mode switch, the banner, the thought and audit panels, and the per-app policy editor. |
+| **Host** | **DeepSeek Harness** with plugin support. This project is a DSH plugin bundle: the same install adds the settings page and registers its own MCP server. Not adapted for other agent apps. |
 | **Privileges** | None for background desktop control. Foreground mode needs administrator rights and raises a UAC prompt. |
 
 ## Install
 
-### From source (works today)
+### As a DSH plugin (recommended)
+
+Build the checkout once:
 
 ```powershell
 git clone https://github.com/thefreedoomdoor/evolution-computer-use-win
@@ -65,30 +71,19 @@ npm install
 npm run build
 ```
 
-The npm package `evolution-computer-use-win` is not published yet; once it is, `npx -y evolution-computer-use-win` replaces the clone step.
+Then install it as a DSH plugin bundle: open **Settings → Plugins → Install from folder** and choose the checkout folder. From an agent session, `plugin_manager` with `action: "install_bundle"` and the absolute folder does the same. One install adds the settings page and registers the MCP server automatically — there is no separate `mcpServers` entry and no companion plugin.
 
-### DeepSeek Harness
+If an older standalone `dsh-evolution-desktop-mode` plugin is still installed, remove it first: this package now contains that settings page, and the two use the same plugin id, so they cannot coexist.
 
-Add the server to DSH's MCP configuration and point `command` at the built CLI:
+The first start after installing runs `init` in the background: it scans program locations into an encrypted index and runs the computer-use self-test, writing a report (see [Configuration](#configuration)). Run `evolution-computer-use-win init` any time you want a full check.
 
-```json
-{
-  "mcpServers": {
-    "computer-use": {
-      "command": "node",
-      "args": ["C:/path/to/evolution-computer-use-win/lib/cli.js", "--desktop", "background"]
-    }
-  }
-}
-```
+The npm package `evolution-computer-use-win` is not published yet; once it is, `npm install evolution-computer-use-win` can replace the clone and build steps.
 
-To see the thought overlay, also install the companion plugin `dsh-evolution-desktop-mode` (see [Thought overlay](#thought-overlay)). Leaving `--desktop` off starts the server with desktop control disabled; the agent can turn it on later with `desktop_mode`.
-
-> **Not adapted for other agent apps.** The MCP server itself is host-agnostic, but only DSH drives it: the overlay writer is a DSH plugin, and no other host has been tested.
+> **Not adapted for other agent apps.** The MCP server itself is host-agnostic, but only DSH drives it: the plugin half, the overlay writer and the settings page are DSH-specific, and no other host has been tested.
 
 ## Quick start
 
-1. Add the configuration above and restart the harness.
+1. Install the plugin as above and restart the harness. The first start scans your programs and runs the self-test; ask the agent to run `init` at any time to repeat it.
 2. Ask for something in plain words, for example `看看我 B 站有没有新私信` ("check my new messages on Bilibili").
 3. The agent calls `computer_use("B站")` to load that category's notes, works the page with `page_*` tools, answers, and saves what worked:
 
@@ -105,11 +100,12 @@ Next time the same request replays that file in one `procedure_run` call.
 ## Configuration
 
 ```text
-evolution-computer-use-win [serve|resume|routines|status] [options]
+evolution-computer-use-win [init|serve|resume|routines|status] [options]
 ```
 
 | Command | Purpose |
 | --- | --- |
+| `init` | Scans program locations and runs the computer-use self-test, then prints a Markdown report (`--json` for JSON). A full scan; the plugin also does this on first start. |
 | `serve` | Default. Runs the MCP server on stdio. |
 | `resume` | Clears the emergency stop and lets desktop control work again. |
 | `routines` | Runs every `onAlarm` procedure once, for use from a scheduler. |
@@ -126,7 +122,12 @@ evolution-computer-use-win [serve|resume|routines|status] [options]
 | `--no-inbox` | off | Do not watch the taskbar or notifications. |
 | `--no-messages` | off | Do not write `messages.jsonl`. |
 | `--no-overlay` | off | Do not start the overlay helper at all. |
+| `--skip-selftest` | off | With `init`, scan only. |
+| `--network` | off | With `init`, let the self-test reach the internet; the default uses local pages only. |
+| `--json` | off | With `init`, print the report as JSON. |
 | `-h`, `--help` | | Print usage. |
+
+`EVOLUTION_CU_NO_AUTO_INIT=1` skips the automatic scan and self-test on server start, for hosts that want to run `init` themselves.
 
 The data folder after a first run:
 
@@ -138,6 +139,10 @@ The data folder after a first run:
 │  ├─ bilibili/看未读.v2.json   kept previous version
 │  └─ bilibili/目录.md          notes for the category, ≤ 1000 chars
 ├─ messages.jsonl            extracted messages, one record per line
+├─ apps-index.enc            encrypted program-location index
+├─ init-report.json          last full init report (plus init-report.md)
+├─ startup-report.json       last startup scan/self-test result
+├─ selftest/                 self-test screenshots
 ├─ desktop-mode.json         written by the DSH plugin, read every 0.8 s
 ├─ activity.json             overlay content, written by the DSH plugin
 ├─ activity-settings.json    overlay position, size, opacity, lock
@@ -170,6 +175,7 @@ The plugin-written paths — `desktop-mode.json`, `activity.json`, `activity-set
 | | `procedure_save` | Saves working steps as a procedure; without `json` it returns the full format description. |
 | | `procedure_note` | Writes a category's notes: the program or site, its addresses and aliases, caveats. |
 | | `procedure_routines` | Runs every `onAlarm` web procedure once, each in its own tab. |
+| Setup | `init` | Scans program locations into the encrypted index and runs the computer-use self-test; returns the report. Runs automatically on first start. |
 | Inbox | `inbox_read` | Reports what is waiting: taskbar flashes and notifications. Only while the inbox is on. |
 
 The tool set is fixed once the server starts, with one exception: switching the desktop mode adds or removes the `desktop` tool, and the server then sends `notifications/tools/list_changed`. Whether `inbox_read` exists is decided at startup by `--no-inbox`. Learning a procedure never changes the list, so saving one cannot invalidate the host's prompt cache.
@@ -306,10 +312,10 @@ The thought and audit panels are two halves joined by one file, `activity.json`:
 
 | Half | Where | Role |
 | --- | --- | --- |
-| Writer | the DSH plugin `dsh-evolution-desktop-mode` | Subscribes to DSH's `agent/assistant-stream`, `session/event` and `tools/execute`, and writes the reasoning, reply and steps atomically. |
+| Writer | this package's built-in DSH plugin (`plugin/lib/index.js`) | Subscribes to DSH's `agent/assistant-stream`, `session/event` and `tools/execute`, and writes the reasoning, reply and steps atomically. |
 | Reader | this package, `src/desktop/overlay.ts` | Reads `activity.json` once a second and feeds it to the WinForms overlay drawn by `scripts/windows-takeover.ps1`. |
 
-The split exists because a plain stdio MCP server cannot see the host's session events. Any other host would only have to supply the writer half. `--no-overlay` skips the whole subsystem.
+The split exists because a plain stdio MCP server cannot see the host's session events; this package's plugin half supplies the writer. `--no-overlay` skips the whole subsystem.
 
 ## Inbox
 
@@ -326,6 +332,10 @@ When a procedure declares a `messages` mapping, every extracted row becomes one 
 | `<data>/browser/` | Browser profile, including the agent's logins. Never share, sync or commit it. |
 | `<data>/procedures/` | Learned procedures and category notes. |
 | `<data>/messages.jsonl` | Extracted messages. |
+| `<data>/apps-index.enc` | Encrypted program-location index (`apps-index.enc` header, AES-256-GCM). Deleted or corrupt files are rebuilt on the next scan. |
+| `<data>/init-report.json` / `.md` | The last full `init` report. |
+| `<data>/startup-report.json` | The last automatic startup scan and self-test result. |
+| `<data>/selftest/` | Screenshots taken by the self-test. |
 | `<data>/desktop-mode.json` | Written by the DSH plugin at the fixed path `~/.evolution-computer-use/desktop-mode.json`, so `--data` does not move it; the server reads it every 0.8 s. |
 | `<data>/activity.json` | What the overlay shows; the plugin writes it at that fixed path. Set `EVOCU_ACTIVITY_FILE` if the server must read another file. |
 | `<data>/activity-settings.json` | Overlay position, size, opacity and lock; written and read by the plugin at the fixed path. |
@@ -363,7 +373,7 @@ npm test             # node --test
 npm run build        # emit lib/
 ```
 
-The test suite has 196 cases (194 pass, 2 skipped) and covers the MCP protocol, the procedure format and library, appearance and policy parsing, the audit log, and the desktop driver against a fake shell. `npm run prepack` runs typecheck and build before publishing.
+The test suite has 220 cases (218 pass, 2 skipped) and covers the MCP protocol, the procedure format and library, appearance and policy parsing, the audit log, and the desktop driver against a fake shell. `npm run prepack` runs typecheck and build before publishing.
 
 ## Design notes
 

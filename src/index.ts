@@ -7,3 +7,7 @@ export { parseProcedure, ProcedureError, type Procedure } from './procedures/for
 export { Faults } from './shared/faults.ts';
 export type { Image, ImageMediaType } from './shared/image.ts';
 export type { JsonSchema, ToolContext, ToolResult, ToolSpec } from './tool.ts';
+
+// DSH plugin entry: package.json 的 main 指向本模块，宿主从这里读取 name / inject / apply。
+export { apply, bridgeConfig, inject, name } from './plugin.ts';
+export type { PluginConfig } from './plugin.ts';

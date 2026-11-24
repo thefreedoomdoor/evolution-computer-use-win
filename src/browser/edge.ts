@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -50,6 +50,17 @@ export const launchArgs = (profileDir: string) => [
   '--disable-extensions', '--disable-sync',
   'about:blank',
 ];
+
+/**
+ * 结束某个 profile 上的浏览器进程：init 自测用一次性 profile，跑完必须收干净，否则下一次同 profile 会因
+ * “窗口已在运行”而启动失败，而且会悄悄留一个看不见的浏览器窗口。只杀命令行带这个 --user-data-dir 的进程。
+ */
+export function killBrowser(profileDir: string): void {
+  if (process.platform !== 'win32') return;
+  const quoted = profileDir.replace(/'/g, "''");
+  const script = `Get-CimInstance Win32_Process -Filter "Name='msedge.exe' or Name='chrome.exe'" | Where-Object { $_.CommandLine -like '*--user-data-dir=${quoted}*' -or $_.CommandLine -like '*--user-data-dir="${quoted}"*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }`;
+  try { execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: 'ignore', windowsHide: true, timeout: 15_000 }); } catch { /* 尽力而为，杀不掉也不影响报告 */ }
+}
 
 /** Starts the browser detached (it outlives a plugin reload and is adopted again) and waits for its debugging port; callers adopt a running one via `runningPort` first. */
 export async function launchBrowser(binary: string, profileDir: string, timeoutMs = 15_000): Promise<number> {

@@ -13,6 +13,7 @@
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "icon": "./plugin/icon.svg",
   "bin": {
     "evolution-computer-use-win": "lib/cli.js"
   },
@@ -21,17 +22,36 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
-    "./package.json": "./package.json"
+    "./client": "./plugin/lib/client.js",
+    "./plugin": "./plugin/lib/index.js",
+    "./plugin/icon": "./plugin/icon.svg",
+    "./plugin/locale/*.json": "./plugin/locale/*.json",
+    "./package.json": "./package.json",
+    "./icon": "./plugin/icon.svg",
+    "./locale/*.json": "./plugin/locale/*.json"
   },
   "files": [
     "lib",
     "scripts",
+    "plugin",
     "src/desktop/win32.ps1",
     "README.md",
     "README.zh-CN.md",
     "NOTICE.md",
     "LICENSE"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./plugin/cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
+    }
+  },
   "keywords": [
     "mcp",
     "computer-use",
@@ -60,5 +80,9 @@
     "@types/ws": "^8.5.12",
     "typescript": "^5.9.3",
     "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-mcp-client": ">=0.1.0-rc.2 || >=0.2.0-rc.2",
+    "@deepseek-ai/schemastery": ">=3.18.1"
   }
 }

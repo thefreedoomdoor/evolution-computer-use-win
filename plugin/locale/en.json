@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Computer control mode + window appearance + per-app policies",
+    "description": "Switch evolution-computer-use between off, background (never touches the user's mouse or keyboard) and foreground (real mouse and keyboard); customize the action banner, thought window and audit window appearance and fonts; and force chosen apps to foreground-only or background-only."
+  }
+}
