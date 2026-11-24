@@ -45,7 +45,7 @@ Computer use for **DeepSeek Harness** over the Model Context Protocol (stdio): t
 | **Actions with reasons** | A second panel beside the thought panel lists every click, scroll, double or right click, key combination, program open or close and screenshot, each with the reason the agent gave. The same rows are kept in daily audit files. |
 | **Per-app foreground rules** | One program can be sent to foreground while everything else stays in background. A window picker fills the rule, and a background rule avoids whole-screen captures for that program. |
 | **Knows where your programs are** | `init` scans the Start menu, App Paths, uninstall entries and Program Files, keeps the result in an encrypted `apps-index.enc`, and refreshes it on every DSH start. `open WeChat` no longer needs a path from you. |
-| **Tested on first run** | The first start also drives a local page through the browser tools and a temporary WinForms window through the desktop tools, then writes `init-report.json` and a readable `.md` with a screenshot per step. Run it again any time with `evolution-computer-use-win init`. |
+| **Tested on first run** | The first start drives a local page through the browser tools, then runs a 13-action diagnostic on a sci-fi HUD: left click, double click, right click, scroll, drag, move without clicking, streaming and plain typing, a keyboard shortcut, opening and closing a program, and opening and closing a document. It writes `init-report.json` and a readable `.md` with the per-action matrix and screenshots. Run it again any time with `evolution-computer-use-win init`. |
 | **One install, both halves** | Installing the DSH bundle registers the stdio MCP server and the settings UI together; there is no separate companion plugin. |
 | **Self-repair that keeps working** | Failed replays fall back to the last two saved versions, and results are checked so a broken selector fails loudly instead of reporting "done". |
 | **Auditable by design** | Every operation is a readable file, every change leaves an old version behind, and every desktop action passes through one visible, stoppable channel. |
@@ -379,7 +379,7 @@ npm test             # node --test
 npm run build        # emit lib/
 ```
 
-The test suite has 220 cases (218 pass, 2 skipped) and covers the MCP protocol, the procedure format and library, appearance and policy parsing, the audit log, and the desktop driver against a fake shell. `npm run prepack` runs typecheck and build before publishing.
+The test suite has 221 cases (219 pass, 2 skipped) and covers the MCP protocol, the procedure format and library, appearance and policy parsing, the audit log, and the desktop driver against a fake shell. `npm run prepack` runs typecheck and build before publishing.
 
 ## Design notes
 

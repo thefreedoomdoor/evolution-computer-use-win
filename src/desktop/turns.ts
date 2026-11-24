@@ -13,7 +13,7 @@ export const STOPPED = '用户按了停下。在用户解除之前，不能再�
 const SIGN_LINGER_MS = 5000;
 const KEPT_ACTIONS = 20;
 /** The actions that send input, named as the agent is told about them. */
-export const INPUTS: Record<string, string> = { click: '点击', drag: '拖动', type: '输入', press: '按键', scroll: '滚动' };
+export const INPUTS: Record<string, string> = { click: '点击', drag: '拖动', type: '输入', press: '按键', scroll: '滚动', move: '移动鼠标', close: '关闭', open: '打开' };
 
 /**
  * The agent's turns on the user's computer, in either mode: one action at a time, in order; the sign up while the agent acts and

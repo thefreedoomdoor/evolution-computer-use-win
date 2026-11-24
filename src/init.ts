@@ -74,6 +74,17 @@ function markdown(report: InitReport): string {
       const status = item.status === 'passed' ? '通过' : item.status === 'failed' ? '失败' : '跳过';
       lines.push(`| ${item.name} | ${status} | ${item.detail.replace(/\|/g, '\\|')} | ${(item.ms / 1000).toFixed(1)}s |`);
     }
+    const detailed = report.selftest.items.filter(item => item.subchecks?.length);
+    if (detailed.length) {
+      lines.push('', '### 桌面动作矩阵（HOLO DIAGNOSTIC）');
+      for (const item of detailed) {
+        lines.push('', `**${item.name}**`);
+        for (const sub of item.subchecks ?? []) {
+          const mark = sub.status === 'passed' ? '✅' : sub.status === 'failed' ? '❌' : '⚪';
+          lines.push(`- ${mark} ${sub.name}：${sub.detail.replace(/\|/g, '\\|')}`);
+        }
+      }
+    }
     const shots = report.selftest.items.flatMap(item => item.screenshots ?? []);
     if (shots.length) lines.push('', '截图：', '', ...shots.map(file => `- \`${file}\``));
   }

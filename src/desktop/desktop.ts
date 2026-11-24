@@ -231,7 +231,51 @@ export function createDesktop(deps: {
     if (!windows.length) throw new Error(`${app.name} 启动了，但 ${appearMs / 1000} 秒内没有出现窗口`);
     return { windows, told: `${app.name} 没开，已经启动；${await giveBack(foreground)}\n` };
   }
-  async function open(app?: string, url?: string): Promise<DesktopResult> {
+  /** Waits for whichever window the launch or document open produced; a new window is not a known title yet. */
+  async function waitFresh(before: Set<number>): Promise<Listed | undefined> {
+    for (const deadline = Date.now() + appearMs; ;) {
+      const fresh = (await list()).windows.filter(entry => !before.has(entry.hwnd) && !entry.minimized && entry.title);
+      if (fresh.length) return largest(fresh);
+      if (Date.now() >= deadline) return undefined;
+      await pause(400);
+    }
+  }
+  async function adopt(entry: Listed, app: string, said: string): Promise<DesktopResult> {
+    if (window?.pid !== entry.pid) known = undefined;
+    window = { hwnd: entry.hwnd, pid: entry.pid, app, title: entry.title };
+    view = undefined;
+    return shot(said);
+  }
+  async function launchPath(path: string): Promise<DesktopResult> {
+    const before = new Set((await list()).windows.map(entry => entry.hwnd));
+    const exe = path.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '');
+    await call('launch', { path });
+    const entry = await waitFresh(before);
+    if (!entry) throw new Error(`启动了 ${path}，但 ${appearMs / 1000} 秒内没有出现窗口`);
+    return adopt(entry, exe || path, `已启动 ${path}（窗口：${entry.title}）；看截图确认。`);
+  }
+  async function openDocument(file: string): Promise<DesktopResult> {
+    if (!existsSync(file)) throw new Error(`要打开的文档不存在：${file}`);
+    const before = new Set((await list()).windows.map(entry => entry.hwnd));
+    await call('openfile', { file });
+    const entry = await waitFresh(before);
+    if (!entry) throw new Error(`用默认程序打开了 ${file}，但 ${appearMs / 1000} 秒内没有出现窗口`);
+    return adopt(entry, '文档', `已用默认程序打开 ${file}（窗口：${entry.title}）；看截图确认。`);
+  }
+  async function closeWindow(): Promise<DesktopResult> {
+    const open = current();
+    await call('close', { hwnd: open.hwnd });
+    for (const deadline = Date.now() + 4000; Date.now() < deadline;) {
+      const { windows } = await list();
+      if (!windows.some(entry => entry.hwnd === open.hwnd)) break;
+      await pause(200);
+    }
+    window = undefined; view = undefined;
+    return { text: `已关闭 ${open.app} 的窗口。` };
+  }
+  async function open(app?: string, url?: string, path?: string, file?: string): Promise<DesktopResult> {
+    if (path?.trim()) return launchPath(path.trim());
+    if (file?.trim()) return openDocument(file.trim());
     // 用户自己的 Edge/Chrome 无法从后台窗口输入（Chromium 丢弃投递的按键），ShellExecute 又会把它带到前台。
     // 所以网址交给 agent 自己的浏览器（CDP 驱动）：窗口留在后面，用户不动鼠标、不丢焦点，截图仍是该后台窗口的 PrintWindow。
     if (url?.trim()) {
@@ -315,7 +359,7 @@ export function createDesktop(deps: {
     record: input => watch.record(input),
     stop: () => watch.stop(),
     review: input => watch.review(input),
-    open: input => open(input.app, input.url),
+    open: input => open(input.app, input.url, input.path, input.file),
     shot: () => shot(),
     click: async input => {
       const at = onWindow(input.x, input.y);
@@ -327,11 +371,17 @@ export function createDesktop(deps: {
       await call('drag', { hwnd: current().hwnd, x: from.x, y: from.y, x2: to.x, y2: to.y, right: input.right === true, hold: holdMs(input.hold) });
       return after(dragged(input.hold), to);
     },
+    move: async input => {
+      const at = onWindow(input.x, input.y);
+      await call('move', { hwnd: current().hwnd, ...at });
+      return after('已把鼠标移过去，没有点击。', at);
+    },
+    close: () => closeWindow(),
     type: async input => {
       if (typeof input.text !== 'string' || !input.text) throw new Error('text 不能是空的');
       const at = input.x !== undefined || input.y !== undefined ? onWindow(input.x, input.y) : undefined;
       if (at) await call('click', { hwnd: current().hwnd, ...at, right: false, count: 1 });
-      await call('type', { hwnd: current().hwnd, text: input.text });
+      await call('type', { hwnd: current().hwnd, text: input.text, delay: input.stream === true ? 45 : 0 });
       if (input.submit) await call('key', { hwnd: current().hwnd, vk: VK.return, modifiers: [] });
       return after(input.submit ? '已输入并回车。' : '已输入。', at);
     },
@@ -375,6 +425,12 @@ export interface DesktopInput {
   action: string; app?: string; x?: number; y?: number; x2?: number; y2?: number; text?: string; submit?: boolean; key?: string; direction?: string; double?: boolean; right?: boolean;
   /** For `open`: a web address to hand to the browser (ShellExecute), for pages a background window cannot type into. */
   url?: string;
+  /** For `open`: an executable to launch, waiting for its window (an app whose name the software table does not know). */
+  path?: string;
+  /** For `open`: a document opened with its default program, waiting for the window. */
+  file?: string;
+  /** For `type`: true streams the characters one at a time, false posts them all at once. */
+  stream?: boolean;
   /** For `click`, `drag` and `press`: seconds to keep the button or the key down (a long press, or walking in a game). */
   hold?: number;
   /** For `record`: how long, and how far apart the frames are. For `review`: a stretch of the recording, or one moment of it. */

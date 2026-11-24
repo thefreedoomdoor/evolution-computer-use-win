@@ -13,10 +13,17 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Browser } from './browser/browser.ts';
-import type { Desktop, Listed } from './desktop/desktop.ts';
+import type { Desktop, DesktopResult, Listed } from './desktop/desktop.ts';
 import { errorText } from './shared/faults.ts';
 
 export type SelftestStatus = 'passed' | 'failed' | 'skipped';
+
+export interface SelftestSubcheck {
+  id: string;
+  name: string;
+  status: SelftestStatus;
+  detail: string;
+}
 
 export interface SelftestItem {
   id: string;
@@ -25,6 +32,7 @@ export interface SelftestItem {
   detail: string;
   ms: number;
   screenshots?: string[];
+  subchecks?: SelftestSubcheck[];
 }
 
 export interface SelftestReport {
@@ -56,7 +64,7 @@ export interface SelftestDeps {
 const DEFAULT_TIMEOUTS: SelftestTimeouts = {
   environment: 15_000,
   browserLocal: 60_000,
-  desktopWindow: 60_000,
+  desktopWindow: 120_000,
   webDemo: 90_000,
   cleanup: 15_000,
 };
@@ -79,6 +87,7 @@ interface Outcome {
   status: SelftestStatus;
   detail: string;
   screenshots?: string[];
+  subchecks?: SelftestSubcheck[];
 }
 
 /** 用于把“环境打不开”与“页面打开后步骤失败”区分开。 */
@@ -273,7 +282,64 @@ async function checkBrowserLocal(ctx: Context): Promise<Outcome> {
   }
 }
 
-const WINDOW_SCRIPT = fileURLToPath(new URL('../scripts/selftest-window.ps1', import.meta.url));
+const HOLO_SCRIPT = fileURLToPath(new URL('../scripts/selftest-holo.ps1', import.meta.url));
+
+interface HoloBox { x: number; y: number; w: number; h: number }
+interface HoloReady {
+  pid: number;
+  hwnd: number;
+  width: number;
+  height: number;
+  zones: Record<string, HoloBox>;
+  boxes: Record<string, HoloBox>;
+}
+interface HoloEvent { t: number; type: string; [key: string]: unknown }
+
+function readHoloEvents(file: string): HoloEvent[] {
+  const events: HoloEvent[] = [];
+  try {
+    for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as HoloEvent;
+        if (parsed && typeof parsed === 'object' && typeof parsed.type === 'string') events.push(parsed);
+      } catch {
+        /* 半行写入时下一轮再读 */
+      }
+    }
+  } catch {
+    /* 文件还没出现 */
+  }
+  return events;
+}
+
+async function waitForHoloEvents(file: string, done: (events: HoloEvent[]) => boolean, ms: number): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (done(readHoloEvents(file))) return;
+    await sleep(100);
+  }
+}
+
+async function readHoloReady(file: string, ms: number): Promise<HoloReady> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (existsSync(file)) {
+      try {
+        const ready = JSON.parse(readFileSync(file, 'utf8')) as HoloReady;
+        if (ready && ready.zones && ready.boxes) return ready;
+      } catch {
+        /* 还在写 */
+      }
+    }
+    await sleep(100);
+  }
+  throw new Error('HUD 的 ready 文件没有出现：' + file);
+}
+
+function centerOf(box: HoloBox): { x: number; y: number } {
+  return { x: box.x + Math.round(box.w / 2), y: box.y + Math.round(box.h / 2) };
+}
 
 async function checkDesktopWindow(ctx: Context): Promise<Outcome> {
   const desktop = ctx.deps.desktop;
@@ -281,16 +347,18 @@ async function checkDesktopWindow(ctx: Context): Promise<Outcome> {
     return { status: 'skipped', detail: '没有传入 desktop（Desktop 未启用），跳过桌面窗口自测。' };
   }
   if (process.platform !== 'win32') {
-    return { status: 'skipped', detail: `平台是 ${process.platform}，桌面窗口自测只在 win32 可用。` };
+    return { status: 'skipped', detail: '平台是 ' + process.platform + '，桌面窗口自测只在 win32 可用。' };
   }
-  if (!existsSync(WINDOW_SCRIPT)) {
-    return { status: 'skipped', detail: `找不到窗口脚本 ${WINDOW_SCRIPT}` };
+  if (!existsSync(HOLO_SCRIPT)) {
+    return { status: 'skipped', detail: '找不到 HUD 窗口脚本 ' + HOLO_SCRIPT };
   }
 
-  const title = `Evolution CU Selftest ${process.pid}`;
-  const resultFile = join(tmpdir(), `evolution-cu-selftest-${process.pid}-${Date.now()}.txt`);
-  ctx.tempFiles.push(resultFile);
-  rmSync(resultFile, { force: true });
+  const title = 'Evolution CU Holo ' + process.pid;
+  const eventFile = join(ctx.dir, ctx.stamp + '-desktop-events.jsonl');
+  const readyFile = join(ctx.dir, ctx.stamp + '-desktop-ready.json');
+  const docFile = join(ctx.dir, ctx.stamp + '-document.txt');
+  ctx.tempFiles.push(eventFile, readyFile, docFile);
+  for (const file of [eventFile, readyFile, docFile]) rmSync(file, { force: true });
 
   const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
   const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -299,10 +367,11 @@ async function checkDesktopWindow(ctx: Context): Promise<Outcome> {
     // because Node's windowsHide sets STARTUPINFO.wShowWindow=SW_HIDE, which also hides
     // the WinForms window the script creates (verified: the window never appears).
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-    '-File', WINDOW_SCRIPT,
+    '-File', HOLO_SCRIPT,
     '-Title', title,
-    '-ResultFile', resultFile,
-    '-LifeSeconds', '20',
+    '-EventFile', eventFile,
+    '-ReadyFile', readyFile,
+    '-LifeSeconds', '90',
   ];
   const proc = spawn(powershell, args, { windowsHide: false, stdio: ['ignore', 'ignore', 'pipe'] });
   ctx.windowProc = proc;
@@ -316,44 +385,180 @@ async function checkDesktopWindow(ctx: Context): Promise<Outcome> {
   });
   if (!spawned.ok) {
     ctx.windowProc = undefined;
-    return { status: 'skipped', detail: `无法启动 PowerShell 窗口脚本：${spawned.error ?? '未知错误'}` };
+    return { status: 'failed', detail: 'HUD 窗口进程启动失败：' + (spawned.error ?? '未知错误') };
   }
 
-  try {
-    const found = await waitForWindow(desktop, title, Math.min(15_000, ctx.timeouts.desktopWindow - 10_000));
-    if (!found) {
-      const exited = await waitUntil(() => proc.exitCode !== null || proc.signalCode !== null, 1_500);
-      if (exited && proc.exitCode !== null && proc.exitCode !== 0) {
-        return {
-          status: 'failed',
-          detail: `窗口脚本异常退出（exit code ${proc.exitCode}）${stderr ? `：${stderr.trim()}` : ''}`,
-        };
-      }
-      return {
-        status: 'skipped',
-        detail: `窗口「${title}」在等待时间内没有出现（桌面控制可能没有启用）${stderr ? `；脚本输出：${stderr.trim()}` : ''}`,
-      };
+  const screenshots: string[] = [];
+  const subchecks: SelftestSubcheck[] = [];
+  const add = (id: string, name: string, status: SelftestStatus, detail: string) => {
+    subchecks.push({ id, name, status, detail });
+  };
+  const runCheck = async (id: string, name: string, work: () => string | Promise<string>): Promise<void> => {
+    try {
+      add(id, name, 'passed', await work());
+    } catch (error) {
+      add(id, name, 'failed', errorText(error));
     }
+  };
+  const save = (id: string, result: DesktopResult) => {
+    if (result.image) screenshots.push(saveShot(ctx, id, result.image.data));
+  };
 
-    const typed = 'selftest 回读 42';
-    const screenshots: string[] = [];
+  try {
+    const ready = await readHoloReady(readyFile, 20_000);
+    const zone = (name: string): HoloBox => {
+      const box = ready.zones[name];
+      if (!box) throw new Error('HUD 没有报告 ' + name + ' 区域');
+      return box;
+    };
+    const box = (name: string): HoloBox => {
+      const found = ready.boxes[name];
+      if (!found) throw new Error('HUD 没有报告 ' + name + ' 输入框');
+      return found;
+    };
+
+    let actionError = '';
     try {
       const opened = await desktop.act({ action: 'open', app: title });
-      ctx.log(`[selftest] desktop open: ${opened.text}`);
-      const shot = await desktop.act({ action: 'shot' });
-      if (!shot.image) throw new Error('desktop shot 没有返回截图');
-      screenshots.push(saveShot(ctx, 'desktop-window', shot.image.data));
-      // 先点一下输入框再输入：窗口不是前台时键盘焦点可能还在窗口本身，直接 type 会落到窗体而不是输入框。
-      await desktop.act({ action: 'click', x: 200, y: 50 });
-      await desktop.act({ action: 'type', text: typed });
-      // 输入框内容一变就写结果文件；WinForms 按钮在后台模式下收不到鼠标消息，不靠按钮判定。
-      const got = await pollFile(resultFile, 15_000);
-      if (got === undefined) throw new Error('输入后结果文件没有出现');
-      if (got !== typed) throw new Error(`回读结果文件内容是 ${JSON.stringify(got)}，期望 ${JSON.stringify(typed)}`);
-      return { status: 'passed', detail: `窗口「${title}」已找到并打开，点击输入框、输入文字并回读一致：${JSON.stringify(got)}。`, screenshots };
+      save('desktop-holo', opened);
+      await desktop.act({ action: 'click', x: centerOf(zone('LMB')).x, y: centerOf(zone('LMB')).y });
+      await desktop.act({ action: 'click', x: centerOf(zone('DBL')).x, y: centerOf(zone('DBL')).y, double: true });
+      await desktop.act({ action: 'click', x: centerOf(zone('RMB')).x, y: centerOf(zone('RMB')).y, right: true });
+      await desktop.act({ action: 'scroll', x: centerOf(zone('SCROLL')).x, y: centerOf(zone('SCROLL')).y, direction: 'down' });
+      await desktop.act({ action: 'drag', x: zone('DRAG').x + 25, y: zone('DRAG').y + 30, x2: zone('DRAG').x + 215, y2: zone('DRAG').y + 65 });
+      await desktop.act({ action: 'move', x: centerOf(zone('MOVE')).x, y: centerOf(zone('MOVE')).y });
+      await desktop.act({ action: 'click', x: centerOf(box('stream')).x, y: centerOf(box('stream')).y });
+      await desktop.act({ action: 'type', text: 'FLOW-9X', stream: true });
+      await desktop.act({ action: 'click', x: centerOf(box('plain')).x, y: centerOf(box('plain')).y });
+      await desktop.act({ action: 'type', text: 'BURST-7Z' });
+      await desktop.act({ action: 'click', x: centerOf(box('stream')).x, y: centerOf(box('stream')).y });
+      await desktop.act({ action: 'press', key: 'ctrl+s' });
     } catch (error) {
-      return { status: 'failed', detail: `桌面窗口流程失败：${errorText(error)}`, screenshots };
+      actionError = errorText(error);
     }
+
+    await waitForHoloEvents(eventFile, events => {
+      const stream = events.some(event => event.type === 'text' && event.source === 'stream' && event.text === 'FLOW-9X');
+      const plain = events.some(event => event.type === 'text' && event.source === 'plain' && event.text === 'BURST-7Z');
+      const key = events.some(event => event.type === 'key' && event.key === 'S' && event.control === true);
+      return stream && plain && key;
+    }, actionError ? 3_000 : 8_000);
+
+    const events = readHoloEvents(eventFile);
+    const trouble = (what: string) => actionError ? what + '（动作序列失败：' + actionError + '）' : what;
+
+    await runCheck('left-click', '左键单击', () => {
+      const event = events.find(item => item.type === 'click' && item.zone === 'LMB');
+      if (!event) throw new Error(trouble('没收到 LMB 单击事件'));
+      return '已捕获 LMB 单击 (' + String(event.x) + ',' + String(event.y) + ')。';
+    });
+    await runCheck('double-click', '双击', () => {
+      const event = events.find(item => item.type === 'double' && item.zone === 'DBL');
+      if (!event) throw new Error(trouble('没收到 DBL 双击事件'));
+      return '已捕获 DBL 双击 (' + String(event.x) + ',' + String(event.y) + ')。';
+    });
+    await runCheck('right-click', '右键单击', () => {
+      const event = events.find(item => item.type === 'right' && item.zone === 'RMB');
+      if (!event) throw new Error(trouble('没收到 RMB 右键事件'));
+      return '已捕获 RMB 右键 (' + String(event.x) + ',' + String(event.y) + ')。';
+    });
+    await runCheck('scroll', '滚动', () => {
+      const event = events.find(item => item.type === 'scroll' && Number(item.delta) !== 0);
+      if (!event) throw new Error(trouble('没收到滚动事件'));
+      return '已捕获滚轮 delta=' + String(event.delta) + '。';
+    });
+    await runCheck('drag', '拖动', () => {
+      const event = events.find(item => item.type === 'drag' && Number(item.distance) >= 100);
+      if (!event) throw new Error(trouble('没收到拖动事件，或拖动距离太小'));
+      return '已捕获拖动 (' + String(event.x1) + ',' + String(event.y1) + ')→(' + String(event.x2) + ',' + String(event.y2) + ')，距离 ' + String(event.distance) + 'px。';
+    });
+    await runCheck('move', '无点击移动鼠标', () => {
+      const event = events.find(item => item.type === 'move' && item.zone === 'MOVE');
+      if (!event) throw new Error(trouble('没收到 MOVE 悬停事件'));
+      return '已捕获悬停移动 (' + String(event.x) + ',' + String(event.y) + ')，没有点击。';
+    });
+    const streamTexts = events.filter(item => item.type === 'text' && item.source === 'stream');
+    const plainTexts = events.filter(item => item.type === 'text' && item.source === 'plain');
+    const streamSpan = streamTexts.length > 1 ? Number(streamTexts[streamTexts.length - 1].t) - Number(streamTexts[0].t) : 0;
+    const plainSpan = plainTexts.length > 1 ? Number(plainTexts[plainTexts.length - 1].t) - Number(plainTexts[0].t) : 0;
+    await runCheck('stream-input', '流式键盘输入', () => {
+      const final = streamTexts.length ? String(streamTexts[streamTexts.length - 1].text) : '';
+      if (final !== 'FLOW-9X') throw new Error(trouble('流式输入框最终内容是 ' + JSON.stringify(final)));
+      if (streamSpan < 150) throw new Error('流式输入只用 ' + streamSpan + 'ms，没有形成逐字流');
+      return '流式输入 ' + JSON.stringify(final) + '，用时 ' + streamSpan + 'ms。';
+    });
+    await runCheck('plain-input', '非流式键盘输入', () => {
+      const final = plainTexts.length ? String(plainTexts[plainTexts.length - 1].text) : '';
+      if (final !== 'BURST-7Z') throw new Error(trouble('非流式输入框最终内容是 ' + JSON.stringify(final)));
+      if (!(plainSpan < streamSpan)) throw new Error('非流式输入用时 ' + plainSpan + 'ms，没有快于流式 ' + streamSpan + 'ms');
+      return '非流式输入 ' + JSON.stringify(final) + '，用时 ' + plainSpan + 'ms。';
+    });
+    await runCheck('shortcut', '键盘快捷键输入', () => {
+      const event = events.find(item => item.type === 'key' && item.key === 'S' && item.control === true);
+      if (!event) throw new Error(trouble('没收到 Ctrl+S 快捷键事件'));
+      return '已捕获 CTRL+S（key=' + String(event.key) + '，control=true）。';
+    });
+
+    let appOpened = false;
+    await runCheck('open-app', '打开应用', async () => {
+      const notepad = join(systemRoot, 'System32', 'notepad.exe');
+      if (!existsSync(notepad)) throw new Error('找不到记事本 ' + notepad);
+      const result = await desktop.act({ action: 'open', path: notepad });
+      if (!result.text.includes('已启动')) throw new Error('打开应用返回：' + result.text.slice(0, 160));
+      appOpened = true;
+      save('desktop-app-open', result);
+      return '已启动记事本，窗口出现。';
+    });
+    await runCheck('close-app', '关闭应用', async () => {
+      if (!appOpened) throw new Error('应用没有打开，无法验证关闭');
+      const result = await desktop.act({ action: 'close' });
+      if (!result.text.includes('已关闭')) throw new Error('关闭应用返回：' + result.text.slice(0, 160));
+      return result.text.trim();
+    });
+
+    let docOpened = false;
+    await runCheck('open-doc', '打开文档', async () => {
+      writeFileSync(docFile, 'Evolution computer-use diagnostic document.\nGenerated by init selftest.\n', 'utf8');
+      const result = await desktop.act({ action: 'open', file: docFile });
+      if (!result.text.includes('已')) throw new Error('打开文档返回：' + result.text.slice(0, 160));
+      docOpened = true;
+      save('desktop-doc-open', result);
+      return '已用默认程序打开文档 ' + docFile + '，窗口出现。';
+    });
+    await runCheck('close-doc', '关闭文档', async () => {
+      if (!docOpened) throw new Error('文档没有打开，无法验证关闭');
+      const result = await desktop.act({ action: 'close' });
+      if (!result.text.includes('已关闭')) throw new Error('关闭文档返回：' + result.text.slice(0, 160));
+      return result.text.trim();
+    });
+
+    try {
+      const back = await desktop.act({ action: 'open', app: title });
+      save('desktop-holo-final', back);
+    } catch {
+      /* HUD 可能已经到寿命；截图不是判定条件 */
+    }
+
+    const failed = subchecks.filter(item => item.status === 'failed');
+    const passed = subchecks.length - failed.length;
+    if (!subchecks.length) return { status: 'failed', detail: '桌面诊断没有产生任何子项。', screenshots };
+    if (failed.length) {
+      return {
+        status: 'failed',
+        detail: '桌面诊断 ' + passed + '/' + subchecks.length + ' 项通过；失败：' + failed.map(item => item.name).join('、') + '。',
+        screenshots,
+        subchecks,
+      };
+    }
+    return {
+      status: 'passed',
+      detail: '桌面诊断 ' + subchecks.length + ' 项全部通过：左键、双击、右键、滚动、拖动、无点击移动、流式输入、非流式输入、快捷键、打开/关闭应用、打开/关闭文档。',
+      screenshots,
+      subchecks,
+    };
+  } catch (error) {
+    const tail = stderr ? '（PowerShell：' + stderr.slice(-300) + '）' : '';
+    return { status: 'failed', detail: '桌面诊断失败：' + errorText(error) + tail, screenshots, ...(subchecks.length ? { subchecks } : {}) };
   } finally {
     await stopProcess(proc);
     ctx.windowProc = undefined;
@@ -463,6 +668,7 @@ async function runItem(ctx: Context, id: string, name: string, check: Check, bud
     ms: Date.now() - started,
   };
   if (outcome.screenshots?.length) item.screenshots = outcome.screenshots;
+  if (outcome.subchecks?.length) item.subchecks = outcome.subchecks;
   try {
     ctx.log(`[selftest] ${id}: ${item.status} (${item.ms}ms) ${item.detail}`);
   } catch {

@@ -134,6 +134,8 @@ export function detailOf(entry: AuditEntry): string {
     }
     case 'press': return entry.key ? `按键 ${pressed(entry.key)}` : '按键';
     case 'scroll': return `滚动 ${DIRECTIONS[entry.direction ?? ''] ?? entry.direction ?? ''}`.trim();
+    case 'move': return `移动鼠标${point(entry.x, entry.y)}`;
+    case 'close': return entry.app ? `关闭 ${entry.app}` : '关闭';
     case 'open': return entry.app ? `打开 ${entry.app}` : '打开';
     case 'shot': return '截图';
     case 'zoom': return `放大${point(entry.x, entry.y)}→(${entry.x2},${entry.y2})`;

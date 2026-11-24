@@ -244,6 +244,22 @@ public static class Desk {
     Thread.Sleep(40);
   }
 
+  /** Moves the pointer with no button pressed: a program sees the pointer over it, and nothing is clicked. */
+  public static void Move(long hwnd, int x, int y) {
+    Aware();
+    var point = new POINT { X = x, Y = y };
+    var target = Under(Live(hwnd), ref point);
+    PostMessage(target, 0x200, IntPtr.Zero, Pack(point.X, point.Y));
+    Thread.Sleep(30);
+  }
+
+  /** Asks the window to close the way its own X button does, so the program can still ask about unsaved work. */
+  public static void Close(long hwnd) {
+    var target = Live(hwnd);
+    PostMessage(target, 0x10, IntPtr.Zero, IntPtr.Zero);
+    Thread.Sleep(120);
+  }
+
   /** Steps a drag takes between its two ends: enough that programs see the pointer travel, not jump. */
   const int DragSteps = 20;
   /**
@@ -285,10 +301,12 @@ public static class Desk {
     return GetGUIThreadInfo(thread, ref info) && info.hwndFocus != IntPtr.Zero ? info.hwndFocus : top;
   }
 
-  public static void Type(long hwnd, string text) {
+  public static void Type(long hwnd, string text) { Type(hwnd, text, 45); }
+  /** delay > 0 streams the characters one at a time; 0 posts them all at once. */
+  public static void Type(long hwnd, string text, int delay) {
     uint thread;
     var to = Focused(Live(hwnd), out thread);
-    foreach (char c in text) PostMessage(to, 0x102, new IntPtr(c), new IntPtr(1));
+    foreach (char c in text) { PostMessage(to, 0x102, new IntPtr(c), new IntPtr(1)); if (delay > 0) Thread.Sleep(delay); }
     // Characters are posted, not typed; let the control take them before a click reads its text.
     Thread.Sleep(60);
   }
@@ -386,11 +404,14 @@ public static class Desk {
     MouseButton(right ? 0x0010u : 0x0004u);
   }
   /** Types as characters, not keys, so any language goes in as written; a line break is the Enter key. */
-  public static void RealType(string text) {
+  public static void RealMove(int x, int y) { Aware(); MouseAt(x, y); Thread.Sleep(30); }
+  public static void RealClose() { RealKey(0x73, new int[] { 0x12 }, 60); Thread.Sleep(120); }
+  public static void RealType(string text) { RealType(text, 8); }
+  public static void RealType(string text, int delay) {
     foreach (var ch in text) {
       if (ch == '\r') continue;
       if (ch == '\n') { RealKey(0x0D, new int[0], 0); continue; }
-      KeyEvent(0, ch, 0x0004); KeyEvent(0, ch, 0x0004 | 0x0002); Thread.Sleep(8);
+      KeyEvent(0, ch, 0x0004); KeyEvent(0, ch, 0x0004 | 0x0002); if (delay > 0) Thread.Sleep(delay);
     }
   }
   /** A key with its scan code too: games read the keyboard by scan code. */
@@ -1122,7 +1143,10 @@ function Run($op, $a) {
     'shot' { return [Desk]::Shot([long]$a.hwnd, [string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int]$a.markX, [int]$a.markY) }
     'click' { [Desk]::Click([long]$a.hwnd, [int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
     'scroll' { [Desk]::Scroll([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
-    'type' { [Desk]::Type([long]$a.hwnd, [string]$a.text); return @{} }
+    'move' { [Desk]::Move([long]$a.hwnd, [int]$a.x, [int]$a.y); return @{} }
+    'close' { [Desk]::Close([long]$a.hwnd); return @{} }
+    'openfile' { Start-Process -FilePath ([string]$a.file); return @{} }
+    'type' { [Desk]::Type([long]$a.hwnd, [string]$a.text, [int]$a.delay); return @{} }
     'key' { [Desk]::Key([long]$a.hwnd, [int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return @{} }
     'restore' { return @{ restored = [Desk]::Restore([long]$a.hwnd) } }
     'refocus' { return @{ refocused = [Desk]::Refocus([long]$a.hwnd) } }
@@ -1132,9 +1156,11 @@ function Run($op, $a) {
     'drag' { [Desk]::Drag([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
     'rdrag' { [Desk]::RealDrag([int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
     'rclick' { [Desk]::RealClick([int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
-    'rtype' { [Desk]::RealType([string]$a.text); return @{} }
+    'rtype' { [Desk]::RealType([string]$a.text, [int]$a.delay); return @{} }
     'rkey' { [Desk]::RealKey([int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return @{} }
     'rscroll' { [Desk]::RealScroll([int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
+    'rmove' { [Desk]::RealMove([int]$a.x, [int]$a.y); return @{} }
+    'rclose' { [Desk]::RealClose(); return @{} }
     'sign' { return Sign $a }
     'status' { return SignStatus }
     'sheet' { return [Desk]::Sheet([string[]]@($a.files), [string[]]@($a.labels), [string]$a.file, [int]$a.columns, [int]$a.tile) }
