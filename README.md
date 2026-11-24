@@ -396,4 +396,4 @@ MIT. Both upstream projects are MIT too, and `NOTICE.md` records the merge:
 - [chenkezhen480/evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use) — the desktop takeover, the procedure format, the browser layer.
 - [Yu-tao-Li/dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) — the Windows MCP layout, the native helper, the DSH packaging.
 
-This repository is the DSH edition of both. It is not adapted for other agent applications.
+This repository is the DSH edition of both, maintained by [thefreedoomdoor](https://github.com/thefreedoomdoor) (Copyright (c) 2026 thefreedoomdoor). It is not adapted for other agent applications.
