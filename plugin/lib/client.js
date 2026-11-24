@@ -59,6 +59,10 @@ window.__ModuleLoader__.load({
     ];
     const DEFAULT_FONT_FAMILIES = ['Microsoft YaHei UI', 'Segoe UI'];
 
+    // 选中态背景用 brand-primary；部分主题（当前深色主题）里它是近白色，
+    // 因此选中态文字必须用深色，否则会白底白字完全不可见。
+    const onBrandText = 'var(--dsw-alias-brand-foreground, #0b0d10)';
+
     const buttonStyle = {
       fontSize: '11px',
       lineHeight: '18px',
@@ -245,7 +249,7 @@ window.__ModuleLoader__.load({
                 border: 'none',
                 borderLeft: index === 0 ? 'none' : '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.28))',
                 background: mode === item.value ? 'var(--dsw-alias-brand-primary, rgba(59,130,246,.88))' : 'transparent',
-                color: mode === item.value ? '#fff' : 'inherit',
+                color: mode === item.value ? onBrandText : 'inherit',
                 fontWeight: mode === item.value ? 600 : 400,
                 cursor: busy ? 'progress' : 'pointer',
                 whiteSpace: 'nowrap',
@@ -1752,7 +1756,7 @@ window.__ModuleLoader__.load({
                 borderRadius: '999px',
                 border: '1px solid ' + (active ? 'transparent' : 'var(--dsw-alias-border-l1, rgba(128,128,128,.28))'),
                 background: active ? 'var(--dsw-alias-brand-primary, #5b8def)' : 'transparent',
-                color: active ? '#fff' : 'inherit',
+                color: active ? onBrandText : 'inherit',
                 fontWeight: active ? 600 : 400,
                 cursor: 'pointer',
               },
@@ -2022,7 +2026,7 @@ window.__ModuleLoader__.load({
                       border: 'none',
                       borderLeft: index === 0 ? 'none' : '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.28))',
                       background: selectedMode === item.value ? 'var(--dsw-alias-brand-primary, #5b8def)' : 'transparent',
-                      color: selectedMode === item.value ? '#fff' : 'inherit',
+                      color: selectedMode === item.value ? onBrandText : 'inherit',
                       fontWeight: selectedMode === item.value ? 600 : 400,
                       cursor: saving ? 'progress' : 'pointer',
                     },
