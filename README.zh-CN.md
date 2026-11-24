@@ -2,183 +2,199 @@
 
 [English](README.md) | 简体中文
 
-会自己进化的电脑操作插件，为 DeepSeek Harness 而写。
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522.16-informational)](package.json)
+[![Windows](https://img.shields.io/badge/desktop-Windows%2010%2F11-0078D4)](package.json)
+[![MCP](https://img.shields.io/badge/protocol-stdio-6E4AFF)](https://modelcontextprotocol.io)
 
-> 从 **[dsh-world](https://github.com/chenkezhen480/dsh-world)** 0.8 的「她自己的浏览器与她学会的操作」独立出来，去掉了对 DSH 宿主的依赖。操作的存储、回放和修复方式由 dsh-world 开发期间的两轮对照实验选定，见 [实验](#实验)。
+面向 **DeepSeek Harness** 的电脑操作能力，通过模型上下文协议（stdio）提供：Agent 先自己摸索出某个网站或桌面程序怎么用，把过程存成操作，之后直接重放，不必每次都重新探索。
 
-**本仓库是两个项目的融合。**[evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use)——专用浏览器、操作目录、停下开关——与 [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win)——Windows 桌面模式与右上角的思考/步骤浮窗——现在合成一个 MCP 服务器，名字是 `evolution-computer-use-win`。两者都是 MIT：合并后的许可见 [LICENSE](LICENSE)，移植自 dsh-world、dsh-inner-browser-use 的第三方代码见 [NOTICE](NOTICE.md)。
+- 网页操作，以及在 Windows 上的后台桌面操作。
+- 学会的操作是普通 JSON 文件：有版本、可修补、多个 Agent 之间可共享。
+- 一个 Node 进程，零运行时依赖，不需要另装任何东西。
 
-- **专用浏览器**：系统自带的 Edge（或 Chrome），独立配置目录，通过 DevTools 协议（CDP）控制，不用你的鼠标键盘，也碰不到你日常的浏览器。
-- **用户的电脑**（Windows，要用户打开）：后台模式往某个窗口投递输入，不动鼠标、不抢焦点；前台模式用真的鼠标键盘操作整个屏幕。
-- **操作目录**：Agent 用页面原语或桌面动作把一件事走通后存成「操作」，下次直接回放，不调模型、不再一步步摸索。网站改版把操作弄坏了，回放会停在出错那一步并说明原因，Agent 当场手动做完、用原名存成新版；新版不行时自动退回旧版。所有用这个插件的 Agent 可以共用同一个操作目录。
+## 目录
 
-插件不含任何平台（B 站、微信等）的代码。某个网站或程序怎么用，由 Agent 自己摸索，学会了才存下来。
+- [功能](#功能)
+- [环境要求](#环境要求)
+- [安装](#安装)
+- [快速开始](#快速开始)
+- [配置](#配置)
+- [工具](#工具)
+- [操作](#操作)
+- [桌面控制](#桌面控制)
+- [思考浮窗](#思考浮窗)
+- [信箱](#信箱)
+- [消息记录](#消息记录)
+- [文件](#文件)
+- [安全与风险](#安全与风险)
+- [多个 Agent](#多个-agent)
+- [开发](#开发)
+- [设计说明](#设计说明)
+- [许可与致谢](#许可与致谢)
 
-没有运行时依赖：浏览器部分只用 Node 自带的 `WebSocket` 和 `fetch`，桌面部分是一个 PowerShell 脚本（`src/desktop/win32.ps1`），用 Windows 自己的接口。
+## 功能
 
-## 接入
+| 能力 | 说明 |
+| --- | --- |
+| **学一次，之后重放** | 一次成功的操作流程被存成操作文件；下次直接执行，修补时更新同一个文件。 |
+| **网页操作** | 9 个 `page_*` 工具驱动独立配置下的 Edge 或 Chrome，Agent 用自己的登录态，不碰你的浏览器。 |
+| **后台桌面操作** | Agent 只看一个窗口的截图，输入直接投给那个窗口。你的鼠标、焦点、剪贴板都不受影响；被其它窗口遮住的窗口照样能读、能点。 |
+| **会自愈的修补** | 重放失败时退回最近两个保存过的版本；结果会做检查，失效的选择器会当场报错，而不是显示「已完成」。 |
+| **可审计** | 每个操作都是可读的文件，每次改动都留下旧版本，每个桌面动作都经过一条可见、可停的通道。 |
 
-需要 Node.js 22.16 或更高。不用手动下载或 build：下面的命令通过 `npx` 运行 [npm 上的包](https://www.npmjs.com/package/evolution-computer-use-win)，第一次用时自动下载。
+## 环境要求
 
-> npm 上的包名是新名字：如果 `evolution-computer-use-win` 还没发布，用[从源码运行](#从源码运行)（或在克隆目录里 `npm publish`）。旧的 `evolution-computer-use` 包是融合前的版本。
+| 要求 | 说明 |
+| --- | --- |
+| **系统** | Windows 10 或 11。两部分都依赖它：找浏览器是在 Windows 安装目录里找 `msedge.exe` / `chrome.exe`，桌面控制也只有 Windows 版。 |
+| **Node.js** | 22.16.0 或更高。除本包以外不需要装任何东西。 |
+| **浏览器** | 默认安装在 Windows 上的 Microsoft Edge 或 Google Chrome。Agent 会用独立配置启动自己的实例。 |
+| **宿主** | 任何 stdio MCP 宿主都能跑通协议，但只为 **DeepSeek Harness** 做了适配。配套插件 `dsh-evolution-desktop-mode` 提供桌面模式开关和思考浮窗。 |
+| **权限** | 后台桌面操作不需要；前台模式需要管理员权限，会弹出 UAC。 |
 
-`--desktop` 默认是 `off`（只有专用浏览器），要让 Agent 操作你的电脑就写 `background` 或 `foreground`，见「用户的电脑」。它只是启动时的初始状态：运行中 Agent 可以用 `desktop_mode` 工具在关闭、后台、前台之间切换，不用重启。
+## 安装
 
-Windows 上的 `npx` 是个批处理文件（`npx.cmd`），有的宿主不能直接启动它，所以 Windows 下的命令用 `cmd /c` 包一层。macOS 和 Linux 上去掉 `cmd /c`，直接把 `npx` 当命令。
-
-### DeepSeek Harness（DSH）
-
-这个项目是为 DeepSeek Harness 写的，也只适配它。要在 DSH 里用，需要两半：本仓库这个 stdio MCP 服务器，以及配套的 DSH 插件 `dsh-evolution-desktop-mode`——桌面模式的设置项、思考浮窗的 `activity.json`（写侧）都由它提供。
-
-在 DSH 里按 stdio 方式加这个 MCP 连接：
-
-- **命令（Windows）：** `cmd /c npx -y evolution-computer-use-win --desktop background`
-- **命令（macOS、Linux）：** `npx -y evolution-computer-use-win --desktop background`
-- **协议版本：** 2025-06-18、2025-03-26、2024-11-05。
-- **初始化说明：** 用法说明通过 `instructions` 下发。
-- **图片：** 截图以 MCP 的 `image` 内容返回；宿主能把图片交给模型，`page_shot` 和 `desktop` 才有用。
-
-### 从源码运行
-
-开发时，或者要用还没发布的改动：
+### 从源码（当前可用的方式）
 
 ```powershell
-git clone https://github.com/thefreedoomdoor/evolution-computer-use-win.git D:\tools\evolution-computer-use-win
-cd D:\tools\evolution-computer-use-win
+git clone https://github.com/thefreedoomdoor/evolution-computer-use-win
+cd evolution-computer-use-win
 npm install
-npm run build        # 生成 lib/
+npm run build
 ```
 
-然后把命令里的 `cmd /c npx -y evolution-computer-use-win` 换成 `node D:/tools/evolution-computer-use-win/lib/cli.js`。
+npm 包 `evolution-computer-use-win` 尚未发布；发布之后 `npx -y evolution-computer-use-win` 可以替代上面的 clone 步骤。
 
-### 未适配其他 Agent 应用
+### DeepSeek Harness
 
-本项目只适配 DeepSeek Harness。Claude Code、Codex CLI、Cursor、Cline、Windsurf、Claude Desktop 以及其他 MCP 客户端都能启动同一条命令（服务器本身就是标准 stdio MCP），但既没有测过，也不提供支持：
+把服务加到 DSH 的 MCP 配置里，`command` 指向编译后的 CLI：
 
-- 设置页里的桌面模式开关、思考浮窗的写侧，都在 DSH 插件里；
-- 浮窗的显示与样式设置页也是 DSH 的插件设置页；
-- 缺了它们浮窗不会出现，残留的空转助手进程要自己清理；传 `--no-overlay` 可以完全关掉浮窗那一半。
-
-下面的 `--desktop` 默认值、`desktop_mode` 工具等 MCP 约定照旧，但出了 DSH 不承诺可用。
-
-### 在 JS/TS 里直接嵌入
-
-不走 MCP 的宿主（比如自己写的 Agent 循环、DSH 插件）直接用库：
-
-```powershell
-npm install evolution-computer-use-win
+```json
+{
+  "mcpServers": {
+    "computer-use": {
+      "command": "node",
+      "args": ["C:/path/to/evolution-computer-use-win/lib/cli.js", "--desktop", "background"]
+    }
+  }
+}
 ```
 
-```ts
-import { createComputerUse, INSTRUCTIONS } from 'evolution-computer-use-win';
+要看思考浮窗，再装配套插件 `dsh-evolution-desktop-mode`（见 [思考浮窗](#思考浮窗)）。不带 `--desktop` 时桌面控制默认关闭，Agent 之后可以用 `desktop_mode` 打开。
 
-const computer = createComputerUse({
-  dataDir: 'D:/agent-data/computer',      // procedures/、browser/、messages.jsonl 都在这里
-  name: '小助手',                          // 操作时屏幕顶上提示里的名字
-  onToolsChanged: () => { /* 桌面控制开关变了，重新注册工具 */ },
-});
-computer.setDesktopMode('background');      // 用户同意后再开：off、background、foreground
+> **未适配其他 Agent 应用。** MCP 服务本身与宿主无关，但只有 DSH 真正驱动它：浮窗的写侧是一个 DSH 插件，其它宿主都未验证。
 
-// 1. 把 INSTRUCTIONS 放进系统提示词；2. 把工具交给模型：
-const tools = computer.tools().map(({ name, description, inputSchema }) => ({ name, description, input_schema: inputSchema }));
-// 3. 模型调用工具时：
-const result = await computer.call(name, args, signal);   // { text, images?: [{ data: Buffer, mediaType, caption? }] }
-```
+## 快速开始
 
-其他接口：`setDesktopMode(mode)`（`off` / `background` / `foreground` 之间切换，前台会弹 UAC；被拒时留在后台并返回原因）、`setForeground(on)`（只切前台开关，会弹 UAC）、`halt()` / `release()`（叫停与解除，宿主有自己的「停下」按钮时用）、`routines()`（跑例行操作）、`status()`、`show()`（把浏览器窗口提到前面）、`stop()`。`messages` 选项可以换成自己的 `MessageSink`，把操作读到的消息记进宿主自己的存储。
-
-## 命令行
+1. 按上面的配置加好服务，重启宿主。
+2. 用日常说法提要求，例如「看看我 B 站有没有新私信」。
+3. Agent 调 `computer_use("B站")` 取这个分类的说明，用 `page_*` 工具操作页面，回答，并把跑通的步骤存下来：
 
 ```text
-evolution-computer-use-win [serve] [选项]   以 MCP（stdio）方式运行
-evolution-computer-use-win resume [选项]    用户按了「停下」之后解除
-evolution-computer-use-win routines [选项]  跑一遍例行操作并打印结果，给计划任务用
-evolution-computer-use-win status [选项]    列出学会的操作和有问题的地方
+computer_use("B站")                     → 分类说明 + 已学会的操作
+page_open("https://message.bilibili.com/")
+page_read()                              → 3 条未读，其中一条来自 小明
+page_shot()                              → 截图
+procedure_save({ ... })                  → bilibili/看未读.json
 ```
 
-没有全局安装（`npm install -g evolution-computer-use-win`）的话，前面加 `npx -y`，比如 `npx -y evolution-computer-use-win resume`。
+下次同样的要求，一次 `procedure_run` 就能重放这个文件。
 
-| 选项 | 说明 |
+## 配置
+
+```text
+evolution-computer-use-win [serve|resume|routines|status] [选项]
+```
+
+| 命令 | 作用 |
 | --- | --- |
-| `--data <目录>` | 数据目录，默认 `~/.evolution-computer-use` |
-| `--procedures <目录>` | 操作目录，默认 `<数据目录>/procedures` |
-| `--profile <目录>` | 浏览器配置目录，默认 `<数据目录>/browser` |
-| `--desktop off\|background\|foreground` | 桌面控制，默认 `off` |
-| `--name <名字>` | 操作时屏幕顶上提示里的名字，默认 `AI` |
-| `--inbox-ignore <名单>` | 信箱不报的程序，逗号分隔 |
-| `--no-inbox` | 桌面控制开着也不看任务栏 |
-| `--no-messages` | 操作读到的消息不记进 `messages.jsonl` |
-| `--no-overlay` | 不启动右上角的思考/步骤浮窗（默认开，显示与样式由 DSH 插件设置） |
+| `serve` | 默认。以 stdio 运行 MCP 服务。 |
+| `resume` | 解除紧急停止，让桌面控制重新可用。 |
+| `routines` | 把每个 `onAlarm` 操作跑一遍，供定时任务调用。 |
+| `status` | 列出学会的操作与分类。 |
 
-故障和恢复都写到 stderr（MCP 宿主一般会记进它自己的日志），Agent 调 `computer_use` 不带参数时也会看到。
+| 选项 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--data <目录>` | `~/.evolution-computer-use` | 数据目录：操作、浏览器配置、消息记录。 |
+| `--procedures <目录>` | `<data>/procedures` | 操作库位置；多个 Agent 指向同一目录即可共享。 |
+| `--profile <目录>` | `<data>/browser` | 浏览器配置，含登录态。 |
+| `--desktop off\|background\|foreground` | `off` | 启动时的桌面控制模式。 |
+| `--name <文本>` | `AI` | 浮窗和停止胶囊上显示的名字。 |
+| `--inbox-ignore <名单>` | 无 | 不在信箱里提示的程序名。 |
+| `--no-inbox` | 关 | 不监视任务栏与通知。 |
+| `--no-messages` | 关 | 不写 `messages.jsonl`。 |
+| `--no-overlay` | 关 | 完全不启动浮窗助手。 |
+| `-h`、`--help` | | 打印用法。 |
+
+首次运行后的数据目录：
+
+```text
+~/.evolution-computer-use/
+├─ browser/                 浏览器配置；登录态在这里
+├─ procedures/
+│  ├─ bilibili/看未读.json
+│  ├─ bilibili/看未读.v2.json   保留的上一版
+│  └─ bilibili/目录.md          该分类的说明，≤ 1000 字符
+├─ messages.jsonl            抽取出的消息，一行一条
+├─ desktop-mode.json         DSH 插件写入，每 0.8 秒读取一次
+├─ activity.json             浮窗内容，由 DSH 插件写入
+├─ activity-settings.json    浮窗的位置、大小、不透明度、锁定
+└─ overlay.lock              单实例锁，含助手进程的 PID
+```
 
 ## 工具
 
-| 工具 | 作用 |
+| 分组 | 工具 | 说明 |
+| --- | --- | --- |
+| 网页 | `page_open` | 在 Agent 自己的浏览器里打开网址。 |
+| | `page_read` | 分页列出当前页面上的可操作元素。 |
+| | `page_click` | 按 `page_read` 给出的编号点击元素。 |
+| | `page_type` | 往输入框里输入，可选择同时回车。 |
+| | `page_press` | 按 Enter、Tab、Escape 等单个按键。 |
+| | `page_scroll` | 滚动页面或某个元素。 |
+| | `page_wait` | 等某段文字或某个元素出现。 |
+| | `page_shot` | 截取页面。 |
+| | `page_eval` | 在页面里跑一小段脚本并返回 JSON。 |
+| 桌面 | `desktop` | 操作用户的电脑：`open`、`shot`、`click`、`drag`、`type`、`press`、`scroll`、`zoom`、`record` / `stop` / `review`。仅在桌面控制开启时可用。 |
+| | `desktop_mode` | 运行时在 `off`、`background`、`foreground` 之间切换。始终存在，因此可以用它打开桌面控制；切前台需要 `confirm: true`。 |
+| 操作 | `computer_use` | 说明这次要用哪个程序或网站，返回该分类的说明、操作名和目录；不带参数时列出可用模块、分类和故障。 |
+| | `procedure_run` | 重放学会的操作；`path` 为 `分类/操作`。 |
+| | `procedure_save` | 把跑通的步骤存成操作；不带 `json` 时返回完整格式说明。 |
+| | `procedure_note` | 写某个分类的说明：对应哪个程序或网站、网址与别称、注意事项。 |
+| | `procedure_routines` | 把每个 `onAlarm` 网页操作各跑一次，各用单独的标签页。 |
+| 信箱 | `inbox_read` | 报告有什么在等着：任务栏闪烁与系统通知。仅在信箱开启时可用。 |
+
+工具清单是固定的。学会新操作不会改变清单，因此存操作不会让宿主的 prompt cache 失效。只有用户的开关会让 `desktop` 和 `inbox_read` 出现或消失，此时服务会发 `notifications/tools/list_changed`。
+
+## 操作
+
+一个操作就是一个 JSON 文件。Agent 先探索（`computer_use` → `page_*` → `procedure_save`）把它学会，之后用 `procedure_run` 重放。
+
+| 字段 | 含义 |
 | --- | --- |
-| `page_open` | 在专用浏览器当前标签页打开地址，返回页面内容（同 `page_read`）；只接受 http/https |
-| `page_read` | 读页面：每个可操作元素一行 `[编号] 角色 名称`，之后附可见文字；`page` 翻页，`ref` 只看某元素里面 |
-| `page_click` | 点编号对应的元素；被别的东西挡住会拒绝 |
-| `page_type` | 在编号对应的输入框里整段输入，替换原有内容；`submit` 为真时再按回车 |
-| `page_press` | 按一个键 |
-| `page_scroll` | 向上或向下滚一屏左右，可指定元素 |
-| `page_wait` | 等某段文字出现（最多 60 秒），或检查某个编号还在不在 |
-| `page_shot` | 当前页面的截图，只在读文字看不明白时用 |
-| `page_eval` | 在当前页面里执行一段 JS，十秒超时，结果截到 2000 字 |
-| `computer_use` | 用之前说要用的程序或网站（`target`），返回这一类的说明、操作名和文件夹；不带参数就列出能用的模块、分类和故障 |
-| `procedure_run` | 跑一个学会的操作：`path` 写 `分类/操作`，`args` 是它声明的参数 |
-| `procedure_save` | 把走通的步骤存成操作；不带 `json` 调用时返回完整的格式说明 |
-| `procedure_note` | 写某一类的说明（对应的程序或网站、网址和别称、注意事项），最多 1000 字 |
-| `procedure_routines` | 把所有 `onAlarm` 的网页操作各跑一次，在单独的标签页里 |
-| `desktop_mode` | 在 `off`、`background`、`foreground` 之间切换桌面控制，不用重启；切前台要 `confirm: true`，会弹 UAC |
-| `desktop` | 操作用户的电脑（只在桌面控制开着时有），见下文 |
-| `inbox_read` | 看信箱（只在信箱开着时有） |
+| `name`、`category` | 文件位置：`<procedures>/<category>/<name>.json`。 |
+| `description` | 一行说明，告诉 Agent 什么时候该用它。 |
+| `params` | 可选参数：参数名到 `type`（`string`、`number`、`boolean`）、`required`、`description` 的映射。`onAlarm` 操作不能声明必填参数。 |
+| `steps` | 按顺序执行的步骤。 |
+| `onAlarm` | 标记为定时操作，供 `procedure_routines` 与定时任务使用。 |
+| `summary` | 可选模板，用于定时报告，例如 `私信 {{count}} 条`。 |
+| `messages` | 可选映射，把抽取到的消息写进 `messages.jsonl`。 |
 
-工具列表固定，不随 Agent 学会新东西而变（保存操作不会让宿主的提示词缓存失效）；只有用户的开关会让 `desktop`、`inbox_read` 出现或消失，这时服务器发 `notifications/tools/list_changed`。`desktop_mode` 一直在，桌面控制关着也能用它打开。返回都很短：页面读取按页截断，脚本结果截断，截图不会自动附带。
+步骤都是同一种声明式写法：
 
-## 自进化是怎么回事
+| 步骤 | 写法 | 说明 |
+| --- | --- | --- |
+| `open` | `{"open": "https://…"}` | 在 Agent 的浏览器里打开页面。 |
+| `click` | `{"click": <定位>}` | 定位可用 `role`、`name`、`text`、`css` 或 `nth`。 |
+| `type` | `{"type": {"into": <定位>, "text": "…"}}` | 替换输入框内容。 |
+| `press` | `{"press": "Enter"}` | 按单个按键。 |
+| `wait` | `{"wait": <条件>}` | 条件可用 `text`、`anchor` 或 `url`。 |
+| `check` | `{"check": <条件>}` | 与 `wait` 类似，但最多等 3 秒，不满足则步骤失败。 |
+| `extract` | `{"extract": {"list": <定位>, "fields": {…}, "limit": n}}` | 抽取多行；结果为空算失败，除非该步骤带 `allowEmpty: true`。 |
+| `script` | `{"script": "…", "as": "名字"}` | 声明式步骤够不到时，在页面里执行脚本。 |
 
-1. **找**：`computer_use("微信")`。只和分类名、这一类的说明比，逐词比、大小写不论；一个词包含另一个就算对上，相邻两字有六成以上相同也算（「bilbili」对上「bilibili」）。操作名不参与：同叫「发送消息」，B 站的和微信的是两回事。一次只返回一类；好几类对得一样好时让 Agent 说具体哪一类；一个都对不上时照实说没有，并提醒它在已有分类的说明里补上这个叫法。
-2. **跑**：`procedure_run("wechat/发朋友圈", { text })`，逐步回放，不调模型。
-3. **学**：没有合适的，用 `page_*` 或 `desktop` 自己做，走通了 `procedure_save`，再 `procedure_note` 写这一类的说明。
-4. **修**：回放遇到找不到的锚点、不满足的 `check` 就停，返回第几步、期望什么、当前页面的快照，并要 Agent 现在就手动做完、用原名存成新版。带 `outward` 的步骤失败一律报"可能已经发出"，不自动重试。
-5. **空的也算没跑通**：`extract` 一条都没有、某个字段每条都空、带 `as` 的 `script` 结果为空，都按失败报出第几步。网站改版后选择器找不到东西，最常见的样子就是"什么都没有"，不报错的话 Agent 会以为"没有新私信"。本来就可能为空的那一步标 `allowEmpty: true`。
-6. **新版不行就退回旧版**：最新版没跑通、而且还没有任何向外的动作时，按从新到旧再试最近 2 个旧版本（`<名字>.v<n>.json`）。网站灰度或 A/B 测试时新旧页面同时存在，为新页面修的版本到旧页面上可能跑不通。旧版本跑通了就用它的结果，后面附一句"最新版第几步没跑通，这次退回第几版"。
-
-dsh-world 在模拟站点上的对比实验：空结果算失败后，不报错的失败从 105 次回放降到 0；退回旧版后，修复把旧页面修坏的从 9 次降到 0，学会、改版、修复全程走通的操作从 9/25 升到 16/25。详见 [实验](#实验)。
-
-## 操作文件
-
-`<操作目录>/<分类>/<名字>.json`，每类的说明是 `<分类>/目录.md`。Agent 也可以用自己的文件工具直接读和改，改了下次查目录、跑操作时就生效。保存时先校验，不合格不落盘并说明哪里不对（写了不认识的键也会被拒绝，免得一个拼写错误悄悄变成"任意链接"）；同名覆盖前，旧版本存成 `<名字>.v<n>.json`，每个名字只留最近 2 个。格式不合格的文件、文件名和 `name` 对不上的、`category` 和所在文件夹对不上的，都跳过并记为故障，不影响其他操作。
-
-| 字段 | 说明 |
-| --- | --- |
-| `name` | 操作名，也是文件名：文字（中文也行）、数字、下划线、连字符，1 到 40 个字，不能是「目录」 |
-| `category` | 分类，也是文件夹名，规则同 `name`；不写时存进「未分类」 |
-| `description` | 说明 |
-| `params` | `{ 名字: { type: string｜number｜boolean, required?, description? } }` |
-| `where` | 不写是网页操作；`desktop` 是后台模式走通的，`screen` 是前台模式走通的 |
-| `steps` | 1 到 40 步，每步只有一个动作 |
-| `onAlarm` | 为真时是例行操作，`procedure_routines` 或 `evolution-computer-use-win routines` 时自动跑；不能有必填参数和向外发出的步骤 |
-| `summary` | 例行结果那一行的模板，可用 `{{count}}` 和脚本 `as` 存下的值 |
-| `messages` | 把 `extract` 的行记成消息，见「消息记录」 |
-
-网页步骤（文字里的 `{{参数}}` 会代入）：
-
-| 动作 | 写法 |
-| --- | --- |
-| `open` | 地址 |
-| `click` | 锚点 |
-| `type` | `{ into: 锚点, text }` |
-| `press` | 键名（与 `page_press` 相同） |
-| `wait` | `{ text｜anchor｜url, seconds? }`，最多 60 秒 |
-| `check` | `{ text｜anchor｜url }`，最多等 3 秒，还不满足就停 |
-| `extract` | `{ list: 锚点, fields: { 名: 锚点, 可加 attr }, limit? }`，`limit` 默认 8、最多 20 |
-| `script` | JS，可 `return`；`as` 把结果存成值 |
-
-锚点是 `{ role?, name?, text?, css?, nth? }`，`role`、`name` 取 `page_read` 里看到的，至少给一个；操作里不存坐标，也不存快照编号。`click`、`type`、`press`、`script` 可加 `outward: true`，表示这一步会向外发出东西。
-
-桌面步骤：`open`（程序名或窗口标题）、`click {x,y,double?,right?,hold?}`、`drag {x,y,x2,y2,right?,hold?}`、`type {text,x?,y?}`、`press`（可加 `hold`）、`scroll {direction,x?,y?}`、`wait {seconds}`。`x`、`y` 是截图上的像素：`desktop` 是那个窗口的截图（窗口挪了不影响，大小变了按比例跟着变），`screen` 是整个屏幕的截图。回放时步与步之间不停，手动做时等过的地方（点完才弹出的窗口）要写 `wait`；保存时插件会指出可能漏了 `wait` 的地方，回放停在那里时也会提醒。
+每个步骤可带两个标记：`outward: true` 表示这一步会往外发东西（消息、评论），永远不会被自动重试；`allowEmpty: true` 表示这一步本来就可能没有结果。
 
 ```json
 {
@@ -195,126 +211,107 @@ dsh-world 在模拟站点上的对比实验：空结果算失败后，不报错�
 }
 ```
 
-## 用户的电脑
+**版本。** 用已有名字保存时，旧文件存为 `<name>.v<n>.json`，只保留最近两个版本。最新版本在任何 `outward` 步骤执行前就失败时，会从新到旧试保留的版本，并报告实际生效的那一版。
 
-只支持 Windows，别的系统上打开会记一条故障，`desktop` 工具不出现。不装任何东西：底下是插件自带的 `win32.ps1`，用 `PrintWindow` 截窗口、`PostMessage` 投鼠标和键盘消息、UI Automation 点托盘图标、开始菜单（`Get-StartApps`）启动程序。
+**分类说明。** 每个分类有一个 `目录.md`，最多 1000 字符：对应哪个网站或程序、Agent 该认得的别称、要当心什么。`computer_use` 返回的就是它：目标只按分类名和分类说明逐词匹配，操作名不参与。
 
-**后台模式**（`--desktop background`）：Agent 看某一个窗口的截图，输入直接投给那个窗口，不移动你的鼠标指针、不抢焦点，你用着电脑它也能用；被别的窗口挡住也照样截得到、点得到。`open` 先找开着的窗口；最小化的原地还原；没有窗口就去托盘点它的图标；托盘里也没有才从开始菜单启动，并把焦点还给你原来的窗口。程序已经在跑却既没窗口也没托盘图标时不再启动（微信 4.x 再启动会多开一个）。够不着以管理员权限运行的程序（很多游戏），遇到时 Agent 会被告知请你切到前台模式。
+**共享。** 让多个 Agent 指向同一个 `--procedures` 目录，它们就共享学会的一切。目录是纯文本，适合用 git 管理。
 
-浏览器页面是投递输入唯一进不去的地方：Chromium 会丢掉发到它窗口的 `WM_CHAR`/`WM_KEYDOWN`，所以往地址栏打字、点页面里面都没反应。改用带 `url` 的 `open`：页面由 agent 自己的浏览器经 CDP 打开，压在其它窗口后面——不会启动你的浏览器，也不会把任何窗口带到前台——截图是对那个后台窗口的窗口捕捉。页面里的操作（读、点链接、滚动）用 `page_open`/`page_read`/`page_click`；只有要手动操作你自己的浏览器时才需要前台模式。
+## 桌面控制
 
-**前台模式**（`--desktop foreground`）：启动时弹一次 Windows 的管理员权限确认，确认后起一个以管理员权限运行的助手，这次运行一直有效；拒绝或 2 分钟内没确认就留在后台模式，原因记为故障。Agent 看整个屏幕，用真的鼠标和键盘操作，游戏和管理员程序都能用；你的鼠标会跟着动，所以这是你把电脑交给它的时候用的。管理员助手只做截图、鼠标、键盘和画提示；列窗口、启动程序仍由普通权限的助手做，Agent 打开的程序不会以管理员身份运行。它和插件之间走一条只有这次知道名字的管道，先对一次性的口令。游戏的用户协议通常禁止自动化操作，长时间代打有封号风险，由你自己决定。
-
-**运行中切换**（`desktop_mode` 工具 / `setDesktopMode()`）：不用重启就能在 `off`、`background`、`foreground` 之间换。切到前台会弹 UAC 确认，Agent 调工具时必须带 `confirm: true`，没带就只返回一句提醒、不会弹窗；你拒绝了就留在后台，原因记进故障。切回后台会停掉管理员助手，切到 `off` 会把两个助手都停掉、`desktop` 工具消失。宿主想自己做个开关，直接调 `computer.setDesktopMode('background')` 这类方法即可，`onToolsChanged` 会通知你重新注册工具。
-
-**在 DSH 设置界面里切换**：配套的 DSH 插件 `dsh-evolution-desktop-mode` 把 `desktopMode` 做成设置页里的插件配置项（`off` / `background` / `foreground`），并写入 `~/.evolution-computer-use/desktop-mode.json`；这个 MCP 服务器每 0.8 秒读一次该文件，选完立即生效，不用重启。
-
-`desktop` 的 `action`：
-
-| action | 作用 |
-| --- | --- |
-| `open` | `app` 写程序名、窗口标题或开始菜单里的名字；不写就列出开着的窗口。带 `url` 就用 agent 自己的浏览器在后台打开并截它的窗口（不碰你的浏览器、不抢焦点） |
-| `shot` | 再截一张 |
-| `click` | `x`、`y`（截图上的像素）；`double`、`right`；`hold` 长按秒数（最多 10） |
-| `drag` | 从 `x`、`y` 拖到 `x2`、`y2`；`hold` 先按住几秒，`right` 用右键 |
-| `type` | `text`；先给 `x`、`y` 就先点那里；`submit` 再回车 |
-| `press` | `key`：回车、Tab、Esc、空格、退格、Delete、Home/End、翻页、方向键、F1–F12、单个字母或数字，可加 `ctrl+`、`shift+`、`alt+`；`hold` 按住秒数 |
-| `scroll` | `direction` 为 up/down/left/right，可加 `x`、`y` |
-| `zoom` | 截图上 `x`、`y` 到 `x2`、`y2` 的一块，按原分辨率放大（最多 4 倍） |
-| `record` | 录会动的东西（视频）：`seconds` 最多 600，`every` 每几秒一帧，`pause: false` 录完不暂停 |
-| `stop` | 停下正在录的 |
-| `review` | 看录好的：不带参数看全片拼图，`from`、`to` 细看一段，`at` 看某一秒 |
-
-每次操作完都给一张新截图，点击之后的截图上用红圈标出实际点到的位置，让 Agent 自己确认做对了没有。截图后会告诉它这个程序还开着哪些别的窗口、上一次输入之后出现或关掉了哪些。
-
-### 操作时你看得到，也随时能叫停
-
-Agent 动手时屏幕顶部正中浮出一个深色胶囊「<名字>正在操作」，旁边是「连按两下 Esc 停下」和「停下」按钮，它操作的窗口四周有一圈蓝色柔光边（前台模式是整个屏幕）。半秒内连按两下 Esc，或点「停下」：
-
-- 正在做的那一步作废，Agent 收到「用户按了停下……别重试，先问问用户」；正在录的立刻停在那里，之后不再给那个窗口发任何按键。
-- 按下时它没有正在做的一步，它的下一个工具结果后面会附上这句话。
-- 在你解除之前，所有动电脑的操作都会被拒绝（回看录好的还可以）。停下会记在 `<数据目录>/desktop-stopped`，Agent 重启也不会自动解除。确认没问题后在终端运行 `npx -y evolution-computer-use-win resume`（数据目录不是默认的就加 `--data`）。
-
-## 思考浮窗（右上角）
-
-Agent 动手时，屏幕右上角浮出一块深色面板：这一回合的状态（「第 2 步 · 执行中」）、每一步做过哪些动作（「打开页面、读取设置」「点击「设置」按钮」），以及下面的思考原文和回复原文。它是只读的，不接鼠标（默认「锁定」= 鼠标穿透），也不进截图和录屏。
-
-浮窗由两部分拼成，中间隔着 `activity.json`：
-
-| 半边 | 在哪 | 干什么 |
+| 模式 | Agent 能做 | 你的鼠标与焦点 |
 | --- | --- | --- |
-| 写侧 | DSH 宿主插件 `dsh-evolution-desktop-mode` | 订阅 DSH 的 `agent/assistant-stream`、`session/event`、`tools/execute`，把思考、回复、步骤原子写进 `<数据目录>/activity.json` |
-| 读侧 | 本插件 `src/desktop/overlay.ts` | 每 1 秒读 `activity.json`，把内容用行 JSON 发给 `scripts/windows-takeover.ps1` 画出的 WinForms 浮窗 |
+| `off` | 什么都不做；不提供 `desktop` 工具。 | 不受影响。 |
+| `background` | 截取一个窗口并向它投递输入。 | 不受影响。你用电脑的同时 Agent 也能干活。 |
+| `foreground` | 整块屏幕，用真实的鼠标键盘。 | 跟着 Agent 走。需要管理员权限（UAC）。 |
 
-这样拆是因为本插件是标准 stdio MCP，拿不到宿主的会话事件；换任何宿主都只要补写侧。
+后台模式的细节：
 
-- **什么时候出现**：只在 Agent 真的操作这台电脑时出现，不是常驻。回合开始、纯思考、纯写代码都不显示；只有本轮调用命中电脑/网页工具（`desktop`、`page_*`、`computer_use`、`procedure_*`、`inbox_read`、`desktop_mode`）才浮出来，第一次操作之前已经流出的思考文字会接上。30 秒没有动作也没有文本就自动收起（等你授权、等你扫码时不会一直占着屏幕）。
-- **显示与样式**：在 DSH 的插件设置页（插件列表里这一条下面）改——开关、位置（右上/左上/右下/左下）、宽度 240–1600、高度 160–1600、不透明度 20–100%、锁定（鼠标穿透）。改动立即生效，存进 `<数据目录>/activity-settings.json`，由写侧抄进 `activity.json`。
-- **语言**：跟随 DSH 界面语言（中文/英文），面板上的标题、步骤行、动作名都是本地化的。
-- **回合结束**：面板随即收起；失败和「被用户停下」在结束前那一瞬照样标出来。
-- **只有一块**：同一台机器上同时跑几个本插件（比如 DSH 里挂了两条连接），也只有先认领 `<数据目录>/overlay.lock` 的那个画浮窗，其余待命；持有者崩了或退出，待命的下一轮接管。
-- **没有写侧时**：在 DSH 之外单独启动（没有配套插件）就没有 `activity.json`，浮窗一直不显示，只多一个空转的 PowerShell 助手进程；不想启动它加 `--no-overlay`。
-- **改了渲染脚本**：`scripts/windows-takeover.cs` 一旦改动，DLL 快路径的哈希校验失败，会自动回落到 `Add-Type` 现编（启动慢 2–5 秒，功能一样）。
+1. Agent 只看一个窗口的截图。输入直接投给那个窗口，所以被别的窗口遮住也能操作。
+2. `open` 找程序的顺序：已开窗口（最小化的就地还原）→ 托盘图标 → 开始菜单。程序在运行但既没窗口也没托盘图标时不会再次启动，避免微信 4.x 开出第二份。
+3. 网页是例外：Chromium 会丢弃投递进去的 `WM_CHAR` / `WM_KEYDOWN`，所以往地址栏输入或在页面里点击都没反应。改用带 `url` 的 `open`：Agent 自己的浏览器经 CDP 在其它所有窗口之后打开。
+4. 以管理员权限运行的程序，后台模式够不到。遇到这类程序请切前台。
 
-移植自 [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) 0.6.3（MIT），见 [NOTICE](NOTICE.md)。
+前台模式在整个会话里接管真实鼠标键盘，并把它操作的程序带到最前，回合结束后那个窗口仍在最前；只适合不接受其它方式的程序。
+
+**停止。** 连按两下 Esc，或点浮窗胶囊上的停止按钮。之后数据目录里会留下 `desktop-stopped` 文件，所有桌面操作都被拒绝，直到执行 `evolution-computer-use-win resume` 才恢复。运行中的调用被叫停后，会在下一步生效。
+
+## 思考浮窗
+
+Agent 在这台电脑上干活时，屏幕右上角会出现一块深色浮窗：当前是第几步、正在做什么，下面是实时的思考与回复。它只读、默认鼠标穿透；窗口截图里没有它，前台模式的整屏截图则可能带上。
+
+**什么时候出现。** 只在 Agent 真的在操作这台电脑时出现：回合开始、单纯思考或写代码都不会显示。第一个电脑或网页工具调用（`desktop`、`page_*`、`computer_use`、`procedure_*`、`inbox_read`、`desktop_mode`）才让它出现，并把在那之前流出的思考接上。30 秒没有动作、或回合结束，就自动收起。
+
+**设置。** 在 DSH 插件设置页：开关、位置（四个角）、宽 240–1600、高 160–1600、不透明度 20–100%、鼠标穿透锁。改完立即生效。
+
+浮窗由两半组成，靠一个文件对接，即 `activity.json`：
+
+| 半边 | 在哪 | 作用 |
+| --- | --- | --- |
+| 写侧 | DSH 插件 `dsh-evolution-desktop-mode` | 订阅 DSH 的 `agent/assistant-stream`、`session/event`、`tools/execute`，把思考、回复、步骤原子写入。 |
+| 读侧 | 本包 `src/desktop/overlay.ts` | 每秒读一次 `activity.json`，喂给 `scripts/windows-takeover.ps1` 画出的 WinForms 浮窗。 |
+
+之所以拆成两半，是因为单纯的 stdio MCP 服务看不到宿主的会话事件。换别的宿主，只需要自己补上写侧。`--no-overlay` 会跳过整块子系统。
 
 ## 信箱
 
-桌面控制开着时，插件替 Agent 看任务栏：按钮在闪，和系统通知（带一小段原话，最多 60 字）。动静一阵一阵来，最后一个动静之后 10 秒内没有新的，就合成一段放进信箱，Agent 的下一个工具结果后面附一句「信箱有新动静」，内容等它用 `inbox_read` 自己看，不在它做事做到一半时塞进来。程序名取它自己的说明，不读窗口标题（标题里可能有消息内容）。不落盘；启动时已经在通知列表里的算旧的。已经有自己通道的程序用 `--inbox-ignore` 排除。读不到通知时（没有权限）记为故障：在 Windows 设置 › 隐私和安全性 › 通知 里允许应用访问通知。
+服务每 2 秒检查一次任务栏闪烁与系统通知，只留最多 60 字符的摘要，安静 10 秒后按程序合并成一行告诉 Agent。它从不读取消息内容：要看内容得由 Agent 调 `inbox_read`。程序按自己的描述命名，不读窗口标题。信箱不落盘，`--inbox-ignore` 可以排除指定程序；拿不到 Windows 通知权限时记为故障。
 
 ## 消息记录
 
-操作可以用 `messages` 声明 `extract` 出来的哪些行是消息：`channel`、`conversationType`（`private` 或 `group`）写死；`accountId`、`conversationId`、`messageId`、`speakerId`、`content` 必填，`speakerName`、`conversationName`、`occurredAt`、`outgoing` 可选，都是 `{{字段}}` 模板，`outgoing` 算出 `true` 表示是 Agent 自己发的。Agent 用 `procedure_run` 跑操作时读到的消息追加进 `<数据目录>/messages.jsonl`，按平台消息 ID 去重，再读一遍不会重复；身份字段缺失的行跳过；写失败不会让操作失败。例行操作读到的不记。嵌入时可以换成自己的 `MessageSink`。
+操作里声明了 `messages` 映射时，抽取到的每一行会变成 `messages.jsonl` 里的一条记录。映射写明每个位置取哪一行的字段或模板：`accountId`、`conversationId`、`messageId`、`content` 必须有，`speakerId` 在 `outgoing` 为真时不需要，`speakerName`、`conversationName`、`occurredAt` 可选；`channel` 与 `conversationType`（`private` 或 `group`）直接写在映射上。缺身份字段、或值不是单行纯文本的行会被跳过并计数；`content` 会截断，`occurredAt` 解析不了时记为当前时间。记录按渠道、会话与平台消息编号去重，包括文件里已有的编号；写入失败不影响操作本身；定时运行不记录。`--no-messages` 关闭该记录。
+
+## 文件
+
+| 路径 | 内容 |
+| --- | --- |
+| `<data>/browser/` | 浏览器配置，含 Agent 的登录态。不要共享、同步或提交。 |
+| `<data>/procedures/` | 学会的操作与分类说明。 |
+| `<data>/messages.jsonl` | 抽取出的消息。 |
+| `<data>/desktop-mode.json`、`activity-settings.json` | 由 DSH 插件写入，服务读取。 |
+| `<data>/activity.json`、`overlay.lock` | 浮窗内容与它的单实例锁。 |
+| `<data>/desktop-stopped` | 仅在紧急停止生效时存在。 |
+| 截图与录制帧 | 系统临时目录，调用结束即删除。 |
+
+## 安全与风险
+
+- **平台规则依然适用。** 自动化可能触发风控或违反网站条款。在意的话用专用小号，也不要以为学会的操作不会被识别出来。
+- **账号的权限就是操作的权限。** 账号能发消息、能评论，操作就能。把这类限制写进 Agent 的提示，并把会外发的步骤标成 `outward`。
+- **桌面控制看得见屏幕。** 开启期间，Agent 能读它打开的任意窗口，也能用这台电脑上已登录的账号。关掉并重启即可收回。
+- **浏览器配置就是凭据库。** 本机任何能读到 `<data>/browser/DevToolsActivePort` 的程序都能驱动已登录的浏览器。不要以同一个 Windows 用户运行不可信的程序。
+- **操作文件与代码相邻。** `script` 步骤在页面源下、以 Agent 的会话执行。跑别人分享的操作之前，先读一遍。
 
 ## 多个 Agent
 
-- **共用学会的操作**：几个 Agent 指向同一个 `--procedures`（默认数据目录本来就是同一个）。一个 Agent 学会的，别的 Agent 用 `computer_use` 就能找到；文件按修改时间判断有没有变，不用重启。
-- **浏览器各用各的**：同一个浏览器配置同一时间只适合一个 Agent 操作（排队只在一个进程里）。几个 Agent 同时跑时给每个一个 `--profile`，登录各自做一次。
-- **桌面同一时间只给一个**：两个 Agent 同时操作同一台电脑会互相打断。
+- 共享 `--procedures`，让多个 Agent 往同一个库里学。
+- 同时运行的 Agent 各用各的 `--profile`；两个浏览器不能共用同一份配置。
+- 同一时刻只能有一个 Agent 操作桌面。一次 `desktop` 调用期间，这台电脑归它。
+- **从 dsh-world 迁移：** 复制 `procedures/` 与 `browser/`（浏览器需先关闭）。`onAlarm` 操作从归档数据库改为 `procedure_routines` 或定时执行 `evolution-computer-use-win routines`；抽取到的消息写进 `messages.jsonl`，不再是 `archive.sqlite`。
 
-## 从 dsh-world 迁移
+## 开发
 
-操作文件格式完全相同。把 `<世界目录>/procedures/` 整个复制到 `<数据目录>/procedures/` 就能用，旧版本文件和 `目录.md` 也照样认；想保留各网站的登录，再把 `<世界目录>/browser/` 复制到 `<数据目录>/browser/`（复制前关掉那个浏览器）。dsh-world 里平铺在 `procedures/` 下的旧文件同样读成「未分类」。`onAlarm` 的操作在 dsh-world 里是闹钟前跑，这里改成 `procedure_routines` 或计划任务里的 `evolution-computer-use-win routines`。消息不再写进 `archive.sqlite`，而是 `messages.jsonl`。
+```powershell
+npm install          # 只需一次
+npm run typecheck    # tsc --noEmit
+npm test             # node --test
+npm run build        # 输出到 lib/
+```
 
-## 文件位置
+测试共 172 个用例（170 通过、2 跳过），覆盖 MCP 协议、操作格式与操作库，以及用假 shell 测的桌面驱动。`npm run prepack` 会在发布前跑类型检查与构建。
 
-| 位置 | 是什么 |
-| --- | --- |
-| `<数据目录>/browser/` | 专用浏览器的配置，**含各网站的登录态**，不要外传、不要放进云盘或仓库 |
-| `<数据目录>/procedures/` | 学会的操作、旧版本、每类的说明；插件只在保存时写 |
-| `<数据目录>/messages.jsonl` | 操作读到的消息 |
-| `<数据目录>/desktop-stopped` | 用户按了停下、还没解除时才有 |
-| `<数据目录>/activity.json` | 浮窗的活动数据，DSH 插件写、本插件读 |
-| `<数据目录>/activity-settings.json` | 浮窗的显示与样式设置，DSH 插件写 |
-| `<数据目录>/overlay.lock` | 浮窗的单实例锁，里面是正在画它的那个进程的 PID |
+## 设计说明
 
-截图和录制的帧只经过系统临时目录，用完就删。
+操作格式由两组实验定下来；两份报告都只给汇总数据，实验脚本从未提交：
 
-## 风险
+- **JSON + 页面脚本胜出。** 纯 JSON、JSON + 脚本、整段脚本三种形式在存活率上差不多（端到端成功 9 / 8 / 9，满分为 25），但 JSON + 脚本修补效果最好（20/20），分页任务也更省。现在 `procedure_save` 写的就是这种形式。（[报告](docs/experiments/2026-11-12-procedure-format.md)）
+- **真正的开销是静默失败，而不是崩溃。** 失效的选择器什么都没抽到、却报告「已完成」，第一轮里出现了 105 次。把空结果当成指名到步骤的失败、再用 `allowEmpty` 显式放行，这个数字降到 0。
+- **修补会弄坏旧页面。** 第一轮里约一半的修补弄坏了上一个页面，因为网站是逐步灰度改版的。在任何 `outward` 步骤之前退回两个保留版本，把这类事故从 9 降到 0，端到端成功率从 9/25 提到 16/25。（[报告](docs/experiments/2026-11-13-procedure-algorithms.md)）
 
-- 让程序操作网页，可能触发平台的风控，也可能违反服务条款，账号可能被限制或封禁。建议用专门的小号登录专用浏览器。插件不保证不被识别为自动化，也没有可靠的"安全频率"。对谁开口不设限：Agent 能用这个浏览器做你的账号做得到的事，需要约束就写进 Agent 自己的提示词。
-- 桌面控制开着时，Agent 能看到它打开的窗口里的一切，能用你在这台电脑上登录着的所有账号。随时关掉（不带 `--desktop` 重启）就收回。
-- 本机上任何程序都能读 `<数据目录>/browser/DevToolsActivePort`，据此驱动已登录的专用浏览器，所以不要以同一个系统用户运行不可信的程序。
+## 许可与致谢
 
-## 验证
+MIT。上游两个项目也都是 MIT，`NOTICE.md` 记录了两者的合并：
 
-`npm test` 跑全部离线测试（154 个，其中 2 个真机测试默认跳过：`ECU_EDGE_TEST=1` 打开真的 Edge，`ECU_DESKTOP_TEST=1` 在开着微信的桌面上只读地截图）。`npm run typecheck` 做类型检查。
+- [chenkezhen480/evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use) —— 桌面接管、操作格式、网页层。
+- [Yu-tao-Li/dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) —— Windows MCP 布局、原生助手、DSH 打包。
 
-已在 Windows 11 家庭中文版（10.0.26200）、Node 22.16 上用构建好的 `lib/cli.js` 走过一遍 MCP：初始化、列工具、后台模式列窗口（真的 PowerShell 助手）、`page_open` 和 `page_shot`（真的 Edge）、保存并回放操作、把操作改坏后自动退回旧版。dsh-world 里做过的桌面真机验证（微信的后台点击、输入、托盘唤起、前台模式）是同一份代码，这里没有重做。尚未验证：macOS 和 Linux 上的浏览器部分；只有 Chrome 没有 Edge 的机器；DSH 以外的其他 Agent 应用（本项目只适配 DSH）。
-
-## 实验
-
-操作用什么形式存、怎么回放、怎么修，是 dsh-world 开发期间两轮对照实验定下来的（真 DSH 容器、`deepseek-flash`、带三个改版的模拟站点、五个任务，判定规则先于结果写定）：
-
-| 轮次 | 问题 | 结论 |
-| --- | --- | --- |
-| 第一轮（2026-11-12） | 纯 JSON、JSON + 页面内脚本、全脚本，哪种形式好 | 全程走通三组打平（9 / 8 / 9），纯 JSON 在翻页任务上贵得多，按"打平选更简单的"选 JSON + 页面内脚本 |
-| 第二轮（2026-11-13） | 三种回放算法各有多少用；存操作比每次现做划不划算 | 空结果算失败（K）把不报错的失败从 105 降到 0；退回旧版（V）让全程走通从 9/25 升到 16/25；指纹自愈（F）不确定；现做更稳但贵约 4 倍 |
-
-本插件实现了 K 和 V；F 和"保存时检查 class 选择器"（报告认为收益最大的下一步）还没有做。英文说明和对照表见 [docs/experiments/](docs/experiments/README.md)，中文原文（报告和事先写定的设计）在 [docs/experiments/zh-CN/](docs/experiments/zh-CN/)；设计文档的副本去掉了实验所用机器的几处本机细节，方法和结果没有删改。
-
-## 来源
-
-核心代码移植自 [dsh-world](https://github.com/chenkezhen480/dsh-world) 0.8 的 `src/ecosystem/computer/`（MIT）。浏览器的查找与启动、最小 CDP 会话、页面内元素登记表又移植并改写自 [dsh-inner-browser-use](https://www.npmjs.com/package/dsh-inner-browser-use) 0.47.28（MIT），保留署名与许可，见 [NOTICE](NOTICE.md)。
-
-右上角的思考/步骤浮窗（`scripts/` 与 `src/desktop/overlay.ts`、`src/desktop/overlay-strings.ts`）移植自 [dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) 0.6.3（MIT），同样保留署名与许可。
+本仓库是两者的 DSH 版本，未适配其他 Agent 应用。
