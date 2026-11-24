@@ -1079,7 +1079,8 @@ window.__ModuleLoader__.load({
       const body = fonts.body || {};
       return h(
         'div',
-        { style: previewFrame('思考窗预览') },
+        { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+        previewFrame('思考窗预览'),
         h(
           'div',
           {
@@ -1148,7 +1149,8 @@ window.__ModuleLoader__.load({
       }
       return h(
         'div',
-        { style: previewFrame('审计窗预览') },
+        { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+        previewFrame('审计窗预览'),
         h(
           'div',
           {
