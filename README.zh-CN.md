@@ -197,7 +197,7 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 
 每个步骤可带两个标记：`outward: true` 表示这一步会往外发东西（消息、评论），永远不会被自动重试；`allowEmpty: true` 表示这一步本来就可能没有结果。
 
-写了 `where` 的操作操作用户的电脑而不是网页，步骤是本机截图上像素：`x`、`y` 取 0–4000，要么都写要么都不写。
+写了 `where` 的操作操作用户的电脑而不是网页，步骤是本机截图上像素：坐标取 0–4000；`type` 的 `x`、`y` 要么都写要么都不写。
 
 | 步骤 | 写法 | 说明 |
 | --- | --- | --- |
@@ -205,7 +205,7 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 | `click` | `{"click": {"x": 120, "y": 240, "double": true, "right": true, "hold": 2}}` | `double`、`right`、`hold` 可选。 |
 | `drag` | `{"drag": {"x": 10, "y": 20, "x2": 300, "y2": 400}}` | 在 `x`,`y` 按下，拖到 `x2`,`y2` 松开；`right`、`hold` 可选。 |
 | `type` | `{"type": {"text": "你好", "x": 100, "y": 200}}` | 坐标可选；写了就先点那里。 |
-| `press` | `{"press": "return", "hold": 0.5}` | 桌面按键名；`hold` 秒数可选。 |
+| `press` | `{"press": "return", "hold": 0.5}` | 桌面按键：`return`、`tab`、`escape`、`space`、`backspace`、`delete`、`home`、`end`、`pageup`、`pagedown`、方向键、`f1`–`f12`、单个字母或数字。`hold` 秒数可选。 |
 | `scroll` | `{"scroll": {"direction": "down", "x": 500, "y": 300}}` | `direction` 取 `up`、`down`、`left`、`right`。 |
 | `wait` | `{"wait": {"seconds": 2}}` | 只等秒数，大于 0、不超过 60。 |
 
@@ -251,9 +251,9 @@ evolution-computer-use-win [serve|resume|routines|status] [选项]
 
 ## 思考浮窗
 
-Agent 在这台电脑上干活时，屏幕右上角会出现一块深色浮窗：当前是第几步、正在做什么，下面是实时的思考与回复。它只读、默认鼠标穿透；窗口截图里没有它，前台模式的整屏截图则可能带上。
+Agent 在这台电脑上干活时，屏幕右上角会出现一块深色浮窗：当前是第几步、正在做什么，下面是实时的思考与回复。它只读、默认鼠标穿透，Windows 又把它排除在捕获之外，所以它不会出现在截图或录制里。
 
-**什么时候出现。** 只在 Agent 真的在操作这台电脑时出现：回合开始、单纯思考或写代码都不会显示。第一个电脑或网页工具调用（`desktop`、`page_*`、`computer_use`、`procedure_*`、`inbox_read`、`desktop_mode`）才让它出现，并把在那之前流出的思考接上。30 秒没有动作、或回合结束，就自动收起。
+**什么时候出现。** 只在 Agent 真的在操作这台电脑时出现：回合开始、单纯思考或写代码都不会显示。第一个电脑或网页工具调用（`desktop`、`page_*`、`computer_use`、`procedure_*`、`inbox_read`、`desktop_mode`）才让它出现，并把在那之前流出的思考接上。连续 30 秒没有电脑操作就收起；回合结束后再停留 20 秒收起。
 
 **设置。** 在 DSH 插件设置页：开关、位置（四个角）、宽 240–1600、高 160–1600、不透明度 20–100%、鼠标穿透锁。改完立即生效。
 
@@ -281,8 +281,10 @@ Agent 在这台电脑上干活时，屏幕右上角会出现一块深色浮窗�
 | `<data>/browser/` | 浏览器配置，含 Agent 的登录态。不要共享、同步或提交。 |
 | `<data>/procedures/` | 学会的操作与分类说明。 |
 | `<data>/messages.jsonl` | 抽取出的消息。 |
-| `<data>/desktop-mode.json`、`activity-settings.json` | 由 DSH 插件写入，服务读取。 |
-| `<data>/activity.json`、`overlay.lock` | 浮窗内容与它的单实例锁。 |
+| `<data>/desktop-mode.json` | 由 DSH 插件写入，服务每 0.8 秒读一次。 |
+| `<data>/activity.json` | 浮窗显示的内容，由 DSH 插件写入。 |
+| `<data>/activity-settings.json` | 浮窗的位置、大小、不透明度与锁定，由 DSH 插件读写。 |
+| `<data>/overlay.lock` | 浮窗助手的单实例锁。 |
 | `<data>/desktop-stopped` | 仅在紧急停止生效时存在。 |
 | 截图与录制帧 | 系统临时目录，调用结束即删除。 |
 

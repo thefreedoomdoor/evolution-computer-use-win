@@ -195,7 +195,7 @@ Step kinds, all in the same declarative shape:
 
 Two flags per step: `outward: true` marks a step that sends something (a message, a comment); it is never retried automatically. `allowEmpty: true` marks a step that may legitimately come back empty.
 
-A procedure with `where` set works the user's computer instead of a page, and its steps are pixels on the screenshot (`x` and `y` are 0–4000, both or neither):
+A procedure with `where` set works the user's computer instead of a page, and its steps are pixels on the screenshot (coordinates are 0–4000; a `type` step takes `x` and `y` together or not at all):
 
 | Step | Shape | Notes |
 | --- | --- | --- |
@@ -203,7 +203,7 @@ A procedure with `where` set works the user's computer instead of a page, and it
 | `click` | `{"click": {"x": 120, "y": 240, "double": true, "right": true, "hold": 2}}` | `double`, `right` and `hold` are optional. |
 | `drag` | `{"drag": {"x": 10, "y": 20, "x2": 300, "y2": 400}}` | Press at `x`,`y`, release at `x2`,`y2`; `right` and `hold` are optional. |
 | `type` | `{"type": {"text": "你好", "x": 100, "y": 200}}` | The coordinates are optional: given, the field is clicked first. |
-| `press` | `{"press": "return", "hold": 0.5}` | Desktop key names; `hold` seconds are optional. |
+| `press` | `{"press": "return", "hold": 0.5}` | A desktop key: `return`, `tab`, `escape`, `space`, `backspace`, `delete`, `home`, `end`, `pageup`, `pagedown`, the arrow keys, `f1`–`f12`, a single letter or digit. `hold` seconds are optional. |
 | `scroll` | `{"scroll": {"direction": "down", "x": 500, "y": 300}}` | Direction `up`, `down`, `left` or `right`. |
 | `wait` | `{"wait": {"seconds": 2}}` | Seconds only, more than 0 and at most 60. |
 
@@ -249,9 +249,9 @@ Foreground mode takes the real mouse and keyboard for the whole session and brin
 
 ## Thought overlay
 
-While the agent works on this computer, a dark panel in the top right shows the current step, what it is doing, and below that the live reasoning and the reply. It is read-only and click-through by default. Window captures do not include it; whole-screen captures in foreground mode can.
+While the agent works on this computer, a dark panel in the top right shows the current step, what it is doing, and below that the live reasoning and the reply. It is read-only and click-through by default, and Windows excludes it from captures, so it never appears in screenshots or recordings.
 
-**When it shows.** Only while the agent is actually working on this machine: a turn starting, or plain thinking and coding, shows nothing. The panel appears on the first computer or page tool call (`desktop`, `page_*`, `computer_use`, `procedure_*`, `inbox_read`, `desktop_mode`), with the reasoning that streamed before that call stitched back in. It retracts after 30 seconds without an action and when the turn ends.
+**When it shows.** Only while the agent is actually working on this machine: a turn starting, or plain thinking and coding, shows nothing. The panel appears on the first computer or page tool call (`desktop`, `page_*`, `computer_use`, `procedure_*`, `inbox_read`, `desktop_mode`), with the reasoning that streamed before that call stitched back in. It retracts after 30 seconds without an action, and 20 seconds after the turn ends.
 
 **Settings.** In the DSH plugin settings: on/off, position (four corners), width 240–1600, height 160–1600, opacity 20–100 %, and click-through lock. Changes apply immediately.
 
@@ -279,8 +279,10 @@ When a procedure declares a `messages` mapping, every extracted row becomes one 
 | `<data>/browser/` | Browser profile, including the agent's logins. Never share, sync or commit it. |
 | `<data>/procedures/` | Learned procedures and category notes. |
 | `<data>/messages.jsonl` | Extracted messages. |
-| `<data>/desktop-mode.json`, `activity-settings.json` | Written by the DSH plugin; read by the server. |
-| `<data>/activity.json`, `overlay.lock` | Overlay content and its single-instance lock. |
+| `<data>/desktop-mode.json` | Written by the DSH plugin, read by the server every 0.8 s. |
+| `<data>/activity.json` | What the overlay shows; written by the DSH plugin. |
+| `<data>/activity-settings.json` | Overlay position, size, opacity and lock; written and read by the DSH plugin. |
+| `<data>/overlay.lock` | The overlay helper's single-instance lock. |
 | `<data>/desktop-stopped` | Present only while the emergency stop is engaged. |
 | Screenshots and recording frames | System temporary folder; deleted when the call ends. |
 
