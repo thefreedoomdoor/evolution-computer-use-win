@@ -1,78 +1,78 @@
 # evolution-computer-use-win
 
-English | [简体中文](README.zh-CN.md)
+[English](README.en.md) | 简体中文
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522.16-informational)](package.json)
 [![Windows](https://img.shields.io/badge/desktop-Windows%2010%2F11-0078D4)](package.json)
 [![MCP](https://img.shields.io/badge/protocol-stdio-6E4AFF)](https://modelcontextprotocol.io)
 
-Computer use for **DeepSeek Harness** over the Model Context Protocol (stdio): the agent learns how to use a website or a desktop program, saves that as a procedure, and replays it later without spending model steps on discovery again.
+面向 **DeepSeek Harness** 的电脑操作能力，通过模型上下文协议（stdio）提供：Agent 先自己摸索出某个网站或桌面程序怎么用，把过程存成操作，之后直接重放，不必每次都重新探索。
 
-- Browser control and, on Windows, background desktop control.
-- A software index built by `init`: where every program lives, stored encrypted, refreshed on every start, so "open WeChat" never needs a pasted path.
-- Learned procedures are plain JSON files: versioned, repairable, shareable between agents.
-- One DSH plugin installs both halves — the MCP server and the settings UI — on one Node process with zero runtime dependencies.
+- 网页操作，以及在 Windows 上的后台桌面操作。
+- `init` 生成的软件位置表：每个程序装在哪，加密保存，每次启动刷新，说「打开微信」不再需要你给路径。
+- 学会的操作是普通 JSON 文件：有版本、可修补、多个 Agent 之间可共享。
+- 一次安装 DSH 插件，同时装上 MCP 服务与设置界面，一个 Node 进程、零运行时依赖。
 
-## Contents
+## 目录
 
-- [Features](#features)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [Configuration](#configuration)
-- [Tools](#tools)
-- [Procedures](#procedures)
-- [Desktop control](#desktop-control)
-- [Overlays and appearance](#overlays-and-appearance)
-- [Inbox](#inbox)
-- [Message log](#message-log)
-- [Files](#files)
-- [Security and risks](#security-and-risks)
-- [Multiple agents](#multiple-agents)
-- [Development](#development)
-- [Design notes](#design-notes)
-- [License and credits](#license-and-credits)
+- [功能](#功能)
+- [环境要求](#环境要求)
+- [安装](#安装)
+- [快速开始](#快速开始)
+- [配置](#配置)
+- [工具](#工具)
+- [操作](#操作)
+- [桌面控制](#桌面控制)
+- [浮窗与外观](#浮窗与外观)
+- [信箱](#信箱)
+- [消息记录](#消息记录)
+- [文件](#文件)
+- [安全与风险](#安全与风险)
+- [多个 Agent](#多个-agent)
+- [开发](#开发)
+- [设计说明](#设计说明)
+- [许可与致谢](#许可与致谢)
 
-## Features
+## 功能
 
-| Capability | What you get |
+| 能力 | 说明 |
 | --- | --- |
-| **Learn once, replay forever** | A working session is saved as a procedure; the next run executes it directly, and a repair updates the same file in place. |
-| **Browser control** | Nine `page_*` tools drive Edge or Chrome on a dedicated profile, so the agent's logins stay its own and your browser is never touched. |
-| **Background desktop control** | The agent sees one window's screenshots and posts input straight to that window. Your mouse pointer, focus and clipboard stay yours; a covered window can still be read and clicked. |
-| **Visible while it works** | A banner at the top of the screen says `DSH正在操作{app}` and carries a stop button for as long as the agent operates this computer. Wording, size, position, colors, fonts and spacing are yours to set. |
-| **Actions with reasons** | A second panel beside the thought panel lists every click, scroll, double or right click, key combination, program open or close and screenshot, each with the reason the agent gave. The same rows are kept in daily audit files. |
-| **Per-app foreground rules** | One program can be sent to foreground while everything else stays in background. A window picker fills the rule, and a background rule avoids whole-screen captures for that program. |
-| **Knows where your programs are** | `init` scans the Start menu, App Paths, uninstall entries and Program Files, keeps the result in an encrypted `apps-index.enc`, and refreshes it on every DSH start. `open WeChat` no longer needs a path from you. |
-| **Tested on first run** | The first start drives a local page through the browser tools, then runs a 13-action diagnostic on a sci-fi HUD: left click, double click, right click, scroll, drag, move without clicking, streaming and plain typing, a keyboard shortcut, opening and closing a program, and opening and closing a document. It writes `init-report.json` and a readable `.md` with the per-action matrix and screenshots. Run it again any time with `evolution-computer-use-win init`. |
-| **One install, both halves** | Installing the DSH bundle registers the stdio MCP server and the settings UI together; there is no separate companion plugin. |
-| **Self-repair that keeps working** | Failed replays fall back to the last two saved versions, and results are checked so a broken selector fails loudly instead of reporting "done". |
-| **Auditable by design** | Every operation is a readable file, every change leaves an old version behind, and every desktop action passes through one visible, stoppable channel. |
+| **学一次，之后重放** | 一次成功的操作流程被存成操作文件；下次直接执行，修补时更新同一个文件。 |
+| **网页操作** | 9 个 `page_*` 工具驱动独立配置下的 Edge 或 Chrome，Agent 用自己的登录态，不碰你的浏览器。 |
+| **后台桌面操作** | Agent 只看一个窗口的截图，输入直接投给那个窗口。你的鼠标、焦点、剪贴板都不受影响；被其它窗口遮住的窗口照样能读、能点。 |
+| **工作时看得见** | Agent 在这台电脑上操作期间，屏幕顶部有一条横幅写着「DSH正在操作{app}」并带「停下」按钮。文字、大小、位置、颜色、字体、排版都可以改。 |
+| **每个动作都有理由** | 思考浮窗左边还有一块审计浮窗，逐条列出点击、滚动、双击、右键、键盘组合、开关程序与截图，后面跟着 Agent 给这一步的理由；同样的记录还会按天写进审计文件。 |
+| **按应用的前后台策略** | 可以只让某个程序走前台，其余仍留在后台。窗口选择器帮你填好规则，后台规则还能让这个程序不再需要整屏截图。 |
+| **知道你程序在哪** | `init` 扫开始菜单、App Paths、卸载表与 Program Files，结果加密存进 `apps-index.enc`，每次 DSH 启动刷新。`打开微信` 不再需要你提供路径。 |
+| **第一次启动就自测** | 第一次启动会先用浏览器工具跑一个本地页面，再在一块科幻 HUD 上做 13 项动作诊断：左键、双击、右键、滚动、拖动、无点击移动、流式与非流式输入、键盘快捷键、打开/关闭应用、打开/关闭文档。随后写下 `init-report.json` 和一份带逐项矩阵与截图的 `.md`。随时可以 `evolution-computer-use-win init` 重跑。 |
+| **一次安装，两半都有** | 装 DSH 插件时同时注册 stdio MCP 服务与设置界面，不需要再装配套插件。 |
+| **会自愈的修补** | 重放失败时退回最近两个保存过的版本；结果会做检查，失效的选择器会当场报错，而不是显示「已完成」。 |
+| **可审计** | 每个操作都是可读的文件，每次改动都留下旧版本，每个桌面动作都经过一条可见、可停的通道。 |
 
-## Requirements
+## 环境要求
 
-| Requirement | Notes |
+| 要求 | 说明 |
 | --- | --- |
-| **OS** | Windows 10 or 11. Both halves depend on it: browser discovery looks for `msedge.exe` / `chrome.exe` under the Windows install roots, and desktop control is Windows-only. |
-| **Node.js** | 22.16.0 or newer. No package is installed beyond this one. |
-| **Browser** | Microsoft Edge or Google Chrome, with a default Windows install. The agent starts its own instance on its own profile. |
-| **Host** | **DeepSeek Harness** with plugin support. This project is a DSH plugin bundle: the same install adds the settings page and registers its own MCP server. Not adapted for other agent apps. |
-| **Privileges** | None for background desktop control. Foreground mode needs administrator rights and raises a UAC prompt. |
+| **系统** | Windows 10 或 11。两部分都依赖它：找浏览器是在 Windows 安装目录里找 `msedge.exe` / `chrome.exe`，桌面控制也只有 Windows 版。 |
+| **Node.js** | 22.16.0 或更高。除本包以外不需要装任何东西。 |
+| **浏览器** | 默认安装在 Windows 上的 Microsoft Edge 或 Google Chrome。Agent 会用独立配置启动自己的实例。 |
+| **宿主** | **DeepSeek Harness**，需要支持插件。本项目本身就是一个 DSH 插件包：同一次安装同时加上设置页并注册自带的 MCP 服务。未适配其他 Agent 应用。 |
+| **权限** | 后台桌面操作不需要；前台模式需要管理员权限，会弹出 UAC。 |
 
-## Install
+## 安装
 
-### As a DSH plugin (recommended)
+### 作为 DSH 插件（推荐）
 
-Install the published package into a folder:
+把已发布的包安装到一个目录：
 
 ```powershell
 npm install evolution-computer-use-win
 ```
 
-Then install `node_modules/evolution-computer-use-win` as a DSH plugin bundle: open **Settings → Plugins → Install from folder** and choose that folder. From an agent session, `plugin_manager` with `action: "install_bundle"` and the absolute folder does the same. One install adds the settings page and registers the MCP server automatically — there is no separate `mcpServers` entry and no companion plugin.
+然后把 `node_modules/evolution-computer-use-win` 作为 DSH 插件包装上：打开 **设置 → 插件 → 从文件夹安装**，选择这个目录。在 Agent 会话里，也可以用 `plugin_manager` 的 `action: "install_bundle"` 并传绝对路径。一次安装就同时加上设置页并自动注册 MCP 服务——不需要再写 `mcpServers`，也不需要配套插件。
 
-To work from source instead, build the checkout once and choose the checkout folder:
+如果想改源码，先编译一份 checkout，再选择 checkout 目录：
 
 ```powershell
 git clone https://github.com/thefreedoomdoor/evolution-computer-use-win
@@ -81,152 +81,152 @@ npm install
 npm run build
 ```
 
-If an older standalone `dsh-evolution-desktop-mode` plugin is still installed, remove it first: this package now contains that settings page, and the two use the same plugin id, so they cannot coexist.
+如果之前装过独立的 `dsh-evolution-desktop-mode` 插件，请先在插件管理里移除它：本包已经内置同一套设置页，两者使用相同的插件 id，不能并存。
 
-The first start after installing runs `init` in the background: it scans program locations into an encrypted index and runs the computer-use self-test, writing a report (see [Configuration](#configuration)). Run `evolution-computer-use-win init` any time you want a full check.
+安装后的第一次启动会在后台跑 `init`：扫描软件位置进加密表，并跑电脑操作自测、写报告（见[配置](#配置)）。随时可以运行 `evolution-computer-use-win init` 做一次完整检查。
 
-> **Not adapted for other agent apps.** The MCP server itself is host-agnostic, but only DSH drives it: the plugin half, the overlay writer and the settings page are DSH-specific, and no other host has been tested.
+> **未适配其他 Agent 应用。** MCP 服务本身与宿主无关，但只有 DSH 真正驱动它：插件这一半、浮窗写侧和设置页都是 DSH 专用的，其它宿主都未验证。
 
-## Quick start
+## 快速开始
 
-1. Install the plugin as above and restart the harness. The first start scans your programs and runs the self-test; ask the agent to run `init` at any time to repeat it.
-2. Ask for something in plain words, for example `看看我 B 站有没有新私信` ("check my new messages on Bilibili").
-3. The agent calls `computer_use("B站")` to load that category's notes, works the page with `page_*` tools, answers, and saves what worked:
+1. 按上面的说明装好插件，重启 DSH。第一次启动会扫描软件并跑自测；之后随时可以让 Agent 运行 `init` 重跑。
+2. 用日常说法提要求，例如「看看我 B 站有没有新私信」。
+3. Agent 调 `computer_use("B站")` 取这个分类的说明，用 `page_*` 工具操作页面，回答，并把跑通的步骤存下来：
 
 ```text
-computer_use("B站")                     → category notes + learned procedures
+computer_use("B站")                     → 分类说明 + 已学会的操作
 page_open("https://message.bilibili.com/")
-page_read()                              → 3 unread, one from 小明
-page_shot()                              → screenshot
+page_read()                              → 3 条未读，其中一条来自 小明
+page_shot()                              → 截图
 procedure_save({ ... })                  → bilibili/看未读.json
 ```
 
-Next time the same request replays that file in one `procedure_run` call.
+下次同样的要求，一次 `procedure_run` 就能重放这个文件。
 
-## Configuration
+## 配置
 
 ```text
-evolution-computer-use-win [init|serve|resume|routines|status] [options]
+evolution-computer-use-win [init|serve|resume|routines|status] [选项]
 ```
 
-| Command | Purpose |
+| 命令 | 作用 |
 | --- | --- |
-| `init` | Scans program locations and runs the computer-use self-test, then prints a Markdown report (`--json` for JSON). A full scan; the plugin also does this on first start. |
-| `serve` | Default. Runs the MCP server on stdio. |
-| `resume` | Clears the emergency stop and lets desktop control work again. |
-| `routines` | Runs every `onAlarm` procedure once, for use from a scheduler. |
-| `status` | Lists learned procedures and categories. |
+| `init` | 扫描软件位置并跑电脑操作自测，然后打印 Markdown 报告（`--json` 输出 JSON）。这是完整扫描；插件第一次启动时也会自动做。 |
+| `serve` | 默认。以 stdio 运行 MCP 服务。 |
+| `resume` | 解除紧急停止，让桌面控制重新可用。 |
+| `routines` | 把每个 `onAlarm` 操作跑一遍，供定时任务调用。 |
+| `status` | 列出学会的操作与分类。 |
 
-| Option | Default | Meaning |
+| 选项 | 默认值 | 含义 |
 | --- | --- | --- |
-| `--data <dir>` | `~/.evolution-computer-use` | Data folder: procedures, browser profile, message log. |
-| `--procedures <dir>` | `<data>/procedures` | Where learned procedures live; point several agents here to share them. |
-| `--profile <dir>` | `<data>/browser` | Browser profile, including its logins. |
-| `--desktop off\|background\|foreground` | `off` | Desktop control mode at startup. |
-| `--name <text>` | `AI` | Companion name in the on-screen operation banner (`AI is operating`). The thought overlay never shows it. |
-| `--inbox-ignore <a,b>` | none | Program names never to report in the inbox. |
-| `--no-inbox` | off | Do not watch the taskbar or notifications. |
-| `--no-messages` | off | Do not write `messages.jsonl`. |
-| `--no-overlay` | off | Do not start the overlay helper at all. |
-| `--skip-selftest` | off | With `init`, scan only. |
-| `--network` | off | With `init`, let the self-test reach the internet; the default uses local pages only. |
-| `--json` | off | With `init`, print the report as JSON. |
-| `-h`, `--help` | | Print usage. |
+| `--data <目录>` | `~/.evolution-computer-use` | 数据目录：操作、浏览器配置、消息记录。 |
+| `--procedures <目录>` | `<data>/procedures` | 操作库位置；多个 Agent 指向同一目录即可共享。 |
+| `--profile <目录>` | `<data>/browser` | 浏览器配置，含登录态。 |
+| `--desktop off\|background\|foreground` | `off` | 启动时的桌面控制模式。 |
+| `--name <文本>` | `AI` | 只在屏幕上的操作横幅里显示（「AI 正在操作」）；思考浮窗不显示这个名字。 |
+| `--inbox-ignore <名单>` | 无 | 不在信箱里提示的程序名。 |
+| `--no-inbox` | 关 | 不监视任务栏与通知。 |
+| `--no-messages` | 关 | 不写 `messages.jsonl`。 |
+| `--no-overlay` | 关 | 完全不启动浮窗助手。 |
+| `--skip-selftest` | 关 | `init` 时只扫描，不跑自测。 |
+| `--network` | 关 | `init` 自测允许访问外网；默认只用本地页面。 |
+| `--json` | 关 | `init` 以 JSON 打印结果。 |
+| `-h`、`--help` | | 打印用法。 |
 
-`EVOLUTION_CU_NO_AUTO_INIT=1` skips the automatic scan and self-test on server start, for hosts that want to run `init` themselves.
+`EVOLUTION_CU_NO_AUTO_INIT=1` 会跳过服务启动时的自动扫描与自测；宿主想自己管理 `init` 时用。
 
-The data folder after a first run:
+首次运行后的数据目录：
 
 ```text
 ~/.evolution-computer-use/
-├─ browser/                  browser profile; logins live here
+├─ browser/                 浏览器配置；登录态在这里
 ├─ procedures/
 │  ├─ bilibili/看未读.json
-│  ├─ bilibili/看未读.v2.json   kept previous version
-│  └─ bilibili/目录.md          notes for the category, ≤ 1000 chars
-├─ messages.jsonl            extracted messages, one record per line
-├─ apps-index.enc            encrypted program-location index
-├─ init-report.json          last full init report (plus init-report.md)
-├─ startup-report.json       last startup scan/self-test result
-├─ selftest/                 self-test screenshots
-├─ desktop-mode.json         written by the DSH plugin, read every 0.8 s
-├─ activity.json             overlay content, written by the DSH plugin
-├─ activity-settings.json    overlay position, size, opacity, lock
-├─ appearance.json           banner, thought and audit panel appearance
-├─ app-policies.json         per-program foreground/background rules
-├─ audit/                    audit-YYYY-MM-DD.jsonl, audit-live.tsv, shots/
-├─ fonts/                    uploaded fonts for the banner and panels
-└─ overlay.lock              single-instance lock held by the server process
+│  ├─ bilibili/看未读.v2.json   保留的上一版
+│  └─ bilibili/目录.md          该分类的说明，≤ 1000 字符
+├─ messages.jsonl            抽取出的消息，一行一条
+├─ apps-index.enc            加密的软件位置表
+├─ init-report.json          最近一次完整 init 报告（另有 init-report.md）
+├─ startup-report.json       最近一次启动扫描与自测结果
+├─ selftest/                 自测截图
+├─ desktop-mode.json         DSH 插件写入，每 0.8 秒读取一次
+├─ activity.json             浮窗内容，由 DSH 插件写入
+├─ activity-settings.json    浮窗的位置、大小、不透明度、锁定
+├─ appearance.json           操作横幅、思考浮窗、审计浮窗的外观
+├─ app-policies.json         按程序的前后台规则
+├─ audit/                    audit-YYYY-MM-DD.jsonl、audit-live.tsv、shots/
+├─ fonts/                    上传的字体，供横幅与浮窗使用
+└─ overlay.lock              单实例锁，由服务器进程持有
 ```
 
-The plugin-written paths — `desktop-mode.json`, `activity.json`, `activity-settings.json`, `appearance.json`, `app-policies.json`, `audit/` and `fonts/` — always live at `~/.evolution-computer-use/`, whatever `--data` says.
+插件写入的这些路径——`desktop-mode.json`、`activity.json`、`activity-settings.json`、`appearance.json`、`app-policies.json`、`audit/`、`fonts/`——始终在 `~/.evolution-computer-use/`，`--data` 改了也不移动。
 
-## Tools
+## 工具
 
-| Group | Tool | Description |
+| 分组 | 工具 | 说明 |
 | --- | --- | --- |
-| Browser | `page_open` | Opens a URL in the agent's own browser. |
-| | `page_read` | Lists the actionable elements of the current page, paged. |
-| | `page_click` | Clicks an element by the number `page_read` returned. |
-| | `page_type` | Types into an input, optionally submitting. |
-| | `page_press` | Presses Enter, Tab, Escape and the like. |
-| | `page_scroll` | Scrolls the page or one element. |
-| | `page_wait` | Waits for text or an element. |
-| | `page_shot` | Screenshots the page. |
-| | `page_eval` | Runs a short script in the page and returns JSON. |
-| Desktop | `desktop` | Acts on the user's computer: `open`, `shot`, `click`, `drag`, `type`, `press`, `scroll`, `zoom`, `record` / `stop` / `review`. Only while desktop control is on. An optional `reason` is what the audit panel and log show for the call. |
-| | `desktop_mode` | Switches between `off`, `background` and `foreground` at runtime. Always present, so it can turn control on; foreground needs `confirm: true`. |
-| Procedures | `computer_use` | Names the program or site about to be used and returns its notes, procedure names and folder. Without arguments, lists modules, categories and faults. |
-| | `procedure_run` | Runs a learned procedure; `path` is `category/name`. |
-| | `procedure_save` | Saves working steps as a procedure; without `json` it returns the full format description. |
-| | `procedure_note` | Writes a category's notes: the program or site, its addresses and aliases, caveats. |
-| | `procedure_routines` | Runs every `onAlarm` web procedure once, each in its own tab. |
-| Setup | `init` | Scans program locations into the encrypted index and runs the computer-use self-test; returns the report. Runs automatically on first start. |
-| Inbox | `inbox_read` | Reports what is waiting: taskbar flashes and notifications. Only while the inbox is on. |
+| 网页 | `page_open` | 在 Agent 自己的浏览器里打开网址。 |
+| | `page_read` | 分页列出当前页面上的可操作元素。 |
+| | `page_click` | 按 `page_read` 给出的编号点击元素。 |
+| | `page_type` | 往输入框里输入，可选择同时回车。 |
+| | `page_press` | 按 Enter、Tab、Escape 等单个按键。 |
+| | `page_scroll` | 滚动页面或某个元素。 |
+| | `page_wait` | 等某段文字或某个元素出现。 |
+| | `page_shot` | 截取页面。 |
+| | `page_eval` | 在页面里跑一小段脚本并返回 JSON。 |
+| 桌面 | `desktop` | 操作用户的电脑：`open`、`shot`、`click`、`drag`、`type`、`press`、`scroll`、`zoom`、`record` / `stop` / `review`。仅在桌面控制开启时可用。可选的 `reason` 会作为这次调用的理由显示在审计浮窗与审计记录里。 |
+| | `desktop_mode` | 运行时在 `off`、`background`、`foreground` 之间切换。始终存在，因此可以用它打开桌面控制；切前台需要 `confirm: true`。 |
+| 操作 | `computer_use` | 说明这次要用哪个程序或网站，返回该分类的说明、操作名和目录；不带参数时列出可用模块、分类和故障。 |
+| | `procedure_run` | 重放学会的操作；`path` 为 `分类/操作`。 |
+| | `procedure_save` | 把跑通的步骤存成操作；不带 `json` 时返回完整格式说明。 |
+| | `procedure_note` | 写某个分类的说明：对应哪个程序或网站、网址与别称、注意事项。 |
+| | `procedure_routines` | 把每个 `onAlarm` 网页操作各跑一次，各用单独的标签页。 |
+| 初始化 | `init` | 扫描软件位置进加密表，并跑电脑操作自测，返回报告。第一次启动时自动运行。 |
+| 信箱 | `inbox_read` | 报告有什么在等着：任务栏闪烁与系统通知。仅在信箱开启时可用。 |
 
-The tool set is fixed once the server starts, with one exception: switching the desktop mode adds or removes the `desktop` tool, and the server then sends `notifications/tools/list_changed`. Whether `inbox_read` exists is decided at startup by `--no-inbox`. Learning a procedure never changes the list, so saving one cannot invalidate the host's prompt cache.
+工具清单在服务启动后固定，只有一个例外：切换桌面模式会让 `desktop` 工具出现或消失，此时服务发 `notifications/tools/list_changed`。`inbox_read` 是否存在由启动时的 `--no-inbox` 决定。学会新操作不会改变清单，因此存操作不会让宿主的 prompt cache 失效。
 
-## Procedures
+## 操作
 
-A procedure is one JSON file. The agent learns by exploring (`computer_use` → `page_*` → `procedure_save`), and later runs it with `procedure_run`.
+一个操作就是一个 JSON 文件。Agent 先探索（`computer_use` → `page_*` → `procedure_save`）把它学会，之后用 `procedure_run` 重放。
 
-| Field | Meaning |
+| 字段 | 含义 |
 | --- | --- |
-| `name`, `category` | File location: `<procedures>/<category>/<name>.json`. |
-| `description` | One line telling the agent when to use it. |
-| `params` | Optional parameters: a map from each parameter's name to `type` (`string`, `number` or `boolean`), `required` and `description`. An `onAlarm` procedure cannot declare required parameters. |
-| `where` | `"desktop"` or `"screen"` for a procedure that works the user's computer — background mode or foreground mode. Such a procedure cannot set `onAlarm`, `summary` or `messages`. A web procedure omits it. |
-| `steps` | The operations, executed in order; at most 40. |
-| `onAlarm` | Marks a routine for `procedure_routines` and scheduled runs. |
-| `summary` | Optional template used in routine reports, e.g. `私信 {{count}} 条`. |
-| `messages` | Optional mapping that writes extracted messages to `messages.jsonl`. |
+| `name`、`category` | 文件位置：`<procedures>/<category>/<name>.json`。 |
+| `description` | 一行说明，告诉 Agent 什么时候该用它。 |
+| `params` | 可选参数：参数名到 `type`（`string`、`number`、`boolean`）、`required`、`description` 的映射。`onAlarm` 操作不能声明必填参数。 |
+| `where` | 要操作用户电脑的操作写 `"desktop"`（后台模式）或 `"screen"`（前台模式）；这类操作不能设 `onAlarm`、`summary`、`messages`。只在网页上做的操作不写。 |
+| `steps` | 按顺序执行的步骤，最多 40 步。 |
+| `onAlarm` | 标记为定时操作，供 `procedure_routines` 与定时任务使用。 |
+| `summary` | 可选模板，用于定时报告，例如 `私信 {{count}} 条`。 |
+| `messages` | 可选映射，把抽取到的消息写进 `messages.jsonl`。 |
 
-Step kinds, all in the same declarative shape:
+步骤都是同一种声明式写法：
 
-| Step | Shape | Notes |
+| 步骤 | 写法 | 说明 |
 | --- | --- | --- |
-| `open` | `{"open": "https://…"}` | Opens a page in the agent's browser. |
-| `click` | `{"click": <anchor>}` | Anchor: `role`, `name`, `text`, `css`, or `nth`. |
-| `type` | `{"type": {"into": <anchor>, "text": "…"}}` | Replaces the field's content. |
-| `press` | `{"press": "Enter"}` | A single key. |
-| `wait` | `{"wait": <condition>}` | Condition: `text`, `anchor` or `url`. |
-| `check` | `{"check": <condition>}` | Like `wait`, but waits up to 3 s and fails the step if not met. |
-| `extract` | `{"extract": {"list": <anchor>, "fields": {…}, "limit": n}}` | Collects rows; an empty result is a failure unless the step has `allowEmpty: true`. |
-| `script` | `{"script": "…", "as": "name"}` | In-page script for what declarative steps cannot reach. |
+| `open` | `{"open": "https://…"}` | 在 Agent 的浏览器里打开页面。 |
+| `click` | `{"click": <定位>}` | 定位可用 `role`、`name`、`text`、`css` 或 `nth`。 |
+| `type` | `{"type": {"into": <定位>, "text": "…"}}` | 替换输入框内容。 |
+| `press` | `{"press": "Enter"}` | 按单个按键。 |
+| `wait` | `{"wait": <条件>}` | 条件可用 `text`、`anchor` 或 `url`。 |
+| `check` | `{"check": <条件>}` | 与 `wait` 类似，但最多等 3 秒，不满足则步骤失败。 |
+| `extract` | `{"extract": {"list": <定位>, "fields": {…}, "limit": n}}` | 抽取多行；结果为空算失败，除非该步骤带 `allowEmpty: true`。 |
+| `script` | `{"script": "…", "as": "名字"}` | 声明式步骤够不到时，在页面里执行脚本。 |
 
-Two flags per step: `outward: true` marks a step that sends something (a message, a comment); it is never retried automatically. `allowEmpty: true` marks a step that may legitimately come back empty.
+每个步骤可带两个标记：`outward: true` 表示这一步会往外发东西（消息、评论），永远不会被自动重试；`allowEmpty: true` 表示这一步本来就可能没有结果。
 
-A procedure with `where` set works the user's computer instead of a page, and its steps are pixels on the screenshot (coordinates are 0–4000; a `type` step takes `x` and `y` together or not at all):
+写了 `where` 的操作操作用户的电脑而不是网页，步骤是本机截图上像素：坐标取 0–4000；`type` 的 `x`、`y` 要么都写要么都不写。
 
-| Step | Shape | Notes |
+| 步骤 | 写法 | 说明 |
 | --- | --- | --- |
-| `open` | `{"open": "微信"}` | Opens a program by name, from its window, tray icon or the Start menu. |
-| `click` | `{"click": {"x": 120, "y": 240, "double": true, "right": true, "hold": 2}}` | `double`, `right` and `hold` are optional. |
-| `drag` | `{"drag": {"x": 10, "y": 20, "x2": 300, "y2": 400}}` | Press at `x`,`y`, release at `x2`,`y2`; `right` and `hold` are optional. |
-| `type` | `{"type": {"text": "你好", "x": 100, "y": 200}}` | The coordinates are optional: given, the field is clicked first. |
-| `press` | `{"press": "return", "hold": 0.5}` | A desktop key: `return`, `tab`, `escape`, `space`, `backspace`, `delete`, `home`, `end`, `pageup`, `pagedown`, the arrow keys, `f1`–`f12`, a single letter or digit. `hold` seconds are optional. |
-| `scroll` | `{"scroll": {"direction": "down", "x": 500, "y": 300}}` | Direction `up`, `down`, `left` or `right`. |
-| `wait` | `{"wait": {"seconds": 2}}` | Seconds only, more than 0 and at most 60. |
+| `open` | `{"open": "微信"}` | 按名字打开程序：它的窗口、托盘图标或开始菜单。 |
+| `click` | `{"click": {"x": 120, "y": 240, "double": true, "right": true, "hold": 2}}` | `double`、`right`、`hold` 可选。 |
+| `drag` | `{"drag": {"x": 10, "y": 20, "x2": 300, "y2": 400}}` | 在 `x`,`y` 按下，拖到 `x2`,`y2` 松开；`right`、`hold` 可选。 |
+| `type` | `{"type": {"text": "你好", "x": 100, "y": 200}}` | 坐标可选；写了就先点那里。 |
+| `press` | `{"press": "return", "hold": 0.5}` | 桌面按键：`return`、`tab`、`escape`、`space`、`backspace`、`delete`、`home`、`end`、`pageup`、`pagedown`、方向键、`f1`–`f12`、单个字母或数字。`hold` 秒数可选。 |
+| `scroll` | `{"scroll": {"direction": "down", "x": 500, "y": 300}}` | `direction` 取 `up`、`down`、`left`、`right`。 |
+| `wait` | `{"wait": {"seconds": 2}}` | 只等秒数，大于 0、不超过 60。 |
 
 ```json
 {
@@ -243,157 +243,157 @@ A procedure with `where` set works the user's computer instead of a page, and it
 }
 ```
 
-**Versioning.** Saving under an existing name stores the old file as `<name>.v<n>.json` and keeps the two most recent versions. When the newest version fails before any `outward` step ran, the kept versions are tried, newest first, and the successful one is reported as the version that worked.
+**版本。** 用已有名字保存时，旧文件存为 `<name>.v<n>.json`，只保留最近两个版本。最新版本在任何 `outward` 步骤执行前就失败时，会从新到旧试保留的版本，并报告实际生效的那一版。
 
-**Category notes.** Each category has a `目录.md` of at most 1000 characters: which site or program it is, aliases the agent should recognise, and what to watch out for. This is what `computer_use` returns: a target is matched word by word against category names and notes, never against procedure names.
+**分类说明。** 每个分类有一个 `目录.md`，最多 1000 字符：对应哪个网站或程序、Agent 该认得的别称、要当心什么。`computer_use` 返回的就是它：目标只按分类名和分类说明逐词匹配，操作名不参与。
 
-**Sharing.** Point several agents at the same `--procedures` folder and they share everything learned. The folder is plain text, so it versions cleanly in git.
+**共享。** 让多个 Agent 指向同一个 `--procedures` 目录，它们就共享学会的一切。目录是纯文本，适合用 git 管理。
 
-## Desktop control
+## 桌面控制
 
-| Mode | What the agent can do | Your mouse and focus |
+| 模式 | Agent 能做 | 你的鼠标与焦点 |
 | --- | --- | --- |
-| `off` | Nothing; the `desktop` tool is not offered. | Unaffected. |
-| `background` | Screenshot one window and post input to it. | Unaffected. The agent works while you use the computer. |
-| `foreground` | The whole screen, with the real mouse and keyboard. | Follows the agent. Needs administrator rights (UAC). |
+| `off` | 什么都不做；不提供 `desktop` 工具。 | 不受影响。 |
+| `background` | 截取一个窗口并向它投递输入。 | 不受影响。你用电脑的同时 Agent 也能干活。 |
+| `foreground` | 整块屏幕，用真实的鼠标键盘。 | 跟着 Agent 走。需要管理员权限（UAC）。 |
 
-Background mode in detail:
+后台模式的细节：
 
-1. The agent sees the screenshot of one window. Input is posted directly to that window, so it works even when the window is covered by others.
-2. `open` finds the program in this order: an open window (a minimized one is restored in place), then a tray icon, then the Start menu. A program running with neither a window nor a tray icon is not launched again, so WeChat 4.x does not get a second copy.
-3. Pages are the exception: Chromium discards posted `WM_CHAR`/`WM_KEYDOWN`, so typing into an address bar or clicking inside a page does nothing. Use `open` with a `url` instead; the agent's own browser is opened behind every other window over CDP.
-4. Windows of programs running as administrator cannot be reached from background mode. Switch to foreground if a program needs it.
+1. Agent 只看一个窗口的截图。输入直接投给那个窗口，所以被别的窗口遮住也能操作。
+2. `open` 找程序的顺序：已开窗口（最小化的就地还原）→ 托盘图标 → 开始菜单。程序在运行但既没窗口也没托盘图标时不会再次启动，避免微信 4.x 开出第二份。
+3. 网页是例外：Chromium 会丢弃投递进去的 `WM_CHAR` / `WM_KEYDOWN`，所以往地址栏输入或在页面里点击都没反应。改用带 `url` 的 `open`：Agent 自己的浏览器经 CDP 在其它所有窗口之后打开。
+4. 以管理员权限运行的程序，后台模式够不到。遇到这类程序请切前台。
 
-Foreground mode takes the real mouse and keyboard for the whole session and brings the program it works in to the front; that window stays in front afterwards. It is meant for programs that refuse anything else.
+前台模式在整个会话里接管真实鼠标键盘，并把它操作的程序带到最前，回合结束后那个窗口仍在最前；只适合不接受其它方式的程序。
 
-**Stopping.** Press Esc twice within half a second, or click the stop button on the banner the agent shows while it works. The `desktop-stopped` file then stays in the data folder, every desktop operation is refused, and nothing resumes until `evolution-computer-use-win resume` clears it. A stop during a running call takes effect at the next step.
+**停止。** 在半秒内连按两下 Esc，或点 Agent 工作时屏幕上横幅里的「停下」按钮。之后数据目录里会留下 `desktop-stopped` 文件，所有桌面操作都被拒绝，直到执行 `evolution-computer-use-win resume` 才恢复。运行中的调用被叫停后，会在下一步生效。
 
-### Per-app policies
+### 按应用策略
 
-The three modes above are the global setting. `app-policies.json` — edited under "Per-app" in the plugin settings — adds rules for single programs. A rule matches one of:
+上面三种模式是全局设置。`app-policies.json`（在插件设置页的「按应用」里编辑）可以为单个程序加规则，匹配方式三选一：
 
-| `match` | Matches |
+| `match` | 匹配什么 |
 | --- | --- |
-| `exe:Weixin.exe` | The program's executable, case-insensitive; `exe` and `exe.exe` are treated as the same name. |
-| `app:微信` | The program name the agent passes to `open`. |
-| `title:无标题 - Notepad` | The window title, for documents that share one executable. |
+| `exe:Weixin.exe` | 程序的 exe 文件名，不分大小写；`exe` 与 `exe.exe` 视为同一个。 |
+| `app:微信` | Agent 传给 `open` 的程序名。 |
+| `title:无标题 - Notepad` | 窗口标题，用于同一个 exe 打开多个文档的情况。 |
 
-The first matching rule wins; programs without a rule follow the global mode. `mode: "foreground"` starts the administrator helper (UAC) before that program is touched — refusing the prompt fails that operation, and the global mode stays where you put it. `mode: "background"` keeps that program's operations in background even when the global mode is foreground, so only its own window is captured instead of the whole screen. Leaving a program that borrowed the foreground helper stops the helper again.
+首条命中生效；没有规则的程序按全局模式走。`mode: "foreground"` 表示动这个程序之前先申请管理员助手（UAC）——用户在弹窗里拒绝，这一步就失败，全局模式保持用户所选不变。`mode: "background"` 表示即使全局是前台，这个程序也按后台来做，只截它自己的窗口，不截整屏。离开那个借用前台助手的程序后，助手会自动关掉。
 
-The settings page lists visible windows with thumbnails, OBS-style: pick one and the rule is filled with its `exe:` name (or `title:` for a document window).
+设置页会用缩略图列出可见窗口，像 OBS 的窗口捕捉那样：点一个窗口，规则里就填好它的 `exe:` 名（文档窗口则用 `title:`）。
 
-A saved procedure replays in the mode it was recorded with (`where: "desktop"` is background, `"screen"` is foreground); per-app rules do not reroute procedure runs.
+已保存的操作按它记录时的 `where` 重放（`"desktop"` 是后台、`"screen"` 是前台），按应用策略不会改变操作的重放方式。
 
-## Overlays and appearance
+## 浮窗与外观
 
-Three windows can appear while the agent works on this machine: a banner at the top, a thought panel in the top right and an audit panel to its left. All three are drawn by a small WinForms helper and are click-through unless unlocked. While background input is used, the same helper also draws a DSH pointer at each mouse action; it sits above the target window but below any app covering that window. Windows is asked to keep the overlays out of captures (`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`): a window screenshot never contains them, though a full-screen capture may still include them on some systems. Configure them on the DSH plugin settings page or by hand in `~/.evolution-computer-use/appearance.json`; every field falls back to its default, so a missing or broken file changes nothing.
+Agent 在这台电脑上干活时最多会出现三块窗口：顶部一条操作横幅、右上角的思考浮窗、以及它左边的审计浮窗。三块都由同一个 WinForms 小助手绘制，默认鼠标穿透。后台操作时，同一个助手还会在每次鼠标动作的位置画一个 DSH 指针；它压在目标窗口之上、盖住目标窗口的前台应用之下。并请 Windows 把这些浮层排除在捕获之外（`SetWindowDisplayAffinity` 的 `WDA_EXCLUDEFROMCAPTURE`）：窗口截图里不会有它们，整屏截图在部分系统上仍可能带上。可以在 DSH 插件设置页里调，也可以手改 `~/.evolution-computer-use/appearance.json`；每个字段都有默认值，文件缺了或写坏了都不影响使用。
 
-### Banner
+### 操作横幅
 
-The capsule at the top says `DSH正在操作{app}`: `{app}` is the program's executable without `.exe`, or the name the agent passed to `open`; with neither, the text is just `DSH正在操作`. Beside it are the hint `连按两下 Esc 停下` and a stop button. It appears with the first desktop or page tool call and fades after 30 seconds without an action and 20 seconds after the turn ends.
+顶部那条横幅写着「DSH正在操作{app}」：`{app}` 是程序 exe 去掉 `.exe`，或者 Agent 传给 `open` 的名字；都没有时就只剩「DSH正在操作」。旁边是提示「连按两下 Esc 停下」和「停下」按钮。第一个电脑或网页工具调用让它出现，连续 30 秒没有电脑操作、或回合结束后 20 秒收起。
 
-Settings: the four labels; width (`0` fits the text) and height 28–120; opacity 20–100 %; position `top-left`, `top-center`, `top-right` or `custom` with `x` and `y`; colors for background, text, hint, dot, stop button, stop label and border (`#AARRGGBB`, picked from a palette); three fonts with family, size and bold; and layout `align`, `offsetX`, `offsetY`, `gap` and `padding`. Any installed family works, or upload `.ttf`/`.otf` files in the settings — they are copied to `~/.evolution-computer-use/fonts/`. An unknown family falls back to Microsoft YaHei UI, then Segoe UI.
+可调：四段文字；宽（`0` 表示按文字自适应）与高 28–120；不透明度 20–100%；位置 `top-left`、`top-center`、`top-right` 或 `custom` 配 `x`/`y`；背景、文字、提示、圆点、停止按钮、停止文字与边框六处颜色（`#AARRGGBB`，从调色板里选）；主文字、提示、停止三段字体（family、字号、加粗）；以及排版 `align`、`offsetX`、`offsetY`、`gap`、`padding`。字体可以用系统已装的，也可以在设置页上传 `.ttf`/`.otf`——上传的文件会复制到 `~/.evolution-computer-use/fonts/`；family 找不到时依次退回 Microsoft YaHei UI 与 Segoe UI。
 
-### Thought panel
+### 思考浮窗
 
-The dark panel in the top right shows the current step, what it is doing, and the live reasoning and reply below. It is read-only and click-through by default.
+右上角的深色浮窗显示当前是第几步、正在做什么，下面是实时的思考与回复。它只读、默认鼠标穿透。
 
-**When it shows.** Only while the agent is actually working on this machine: a turn starting, or plain thinking and coding, shows nothing. The panel appears on the first computer or page tool call (`desktop`, `page_*`, `computer_use`, `procedure_*`, `inbox_read`, `desktop_mode`), with the reasoning that streamed before that call stitched back in. It retracts after 30 seconds without an action, and 20 seconds after the turn ends.
+**什么时候出现。** 只在 Agent 真的在操作这台电脑时出现：回合开始、单纯思考或写代码都不会显示。第一个电脑或网页工具调用（`desktop`、`page_*`、`computer_use`、`procedure_*`、`inbox_read`、`desktop_mode`）才让它出现，并把在那之前流出的思考接上。连续 30 秒没有电脑操作就收起；回合结束后再停留 20 秒收起。
 
-**Settings.** On/off, position (four corners or custom with x/y), width 240–1600, height 160–1600, opacity 20–100 %, click-through lock, colors and fonts. Changes apply immediately.
+**设置。** 开关、位置（四个角或自定义 x/y）、宽 240–1600、高 160–1600、不透明度 20–100%、鼠标穿透锁，以及颜色与字体。改完立即生效。
 
-### Audit panel
+### 审计浮窗
 
-A second panel sits to the left of the thought panel, top edges aligned, and lists the last 40 actions: time, success or failure, action, program and detail — `点击 (412,238)`, `双击 (412,238)`, `右键 (412,238)`, `拖动 (12,34)→(90,120)`, `按键 Ctrl+S`, `输入 12 个字`, `滚动 ↓`, `打开 微信`, `关闭 记事本`, `截图` — followed by the reason the agent gave for that step.
+第二块浮窗贴在思考浮窗左边，顶边对齐，逐行列出最近 40 个动作：时间、成功或失败、动作、程序与细节——`点击 (412,238)`、`双击 (412,238)`、`右键 (412,238)`、`拖动 (12,34)→(90,120)`、`按键 Ctrl+S`、`输入 12 个字`、`滚动 ↓`、`打开 微信`、`关闭 记事本`、`截图`——后面是 Agent 给这一步的理由。
 
-Settings: on/off; position (`left-of-thought` by default, four corners or custom with x/y); width, height and opacity; click-through lock; visible row count (default 12); show time, reason and screenshot toggles; colors for background, border, text, muted text, accent, reason and the screenshot tag; and two fonts. The panel reads `audit-live.tsv` once a second; that file keeps the newest 40 rows, newest last.
+可调：开关；位置（默认 `left-of-thought`，也可四个角或自定义 x/y）；宽、高、不透明度；鼠标穿透锁；显示行数（默认 12）；是否显示时间、理由、缩略图；背景、边框、文字、次要文字、强调色、理由与截图标签的颜色；以及标题与正文两段字体。浮窗每秒读一次 `audit-live.tsv`，这个文件只保留最新 40 行，最新的在最后。
 
-### Audit log
+### 审计记录
 
-Every desktop action appends one JSON line to `~/.evolution-computer-use/audit/audit-YYYY-MM-DD.jsonl`: `at`, `session`, `turn`, `tool`, `action`, `app`, `exe`, `title`, coordinates, flags, key and modifiers, text, direction, seconds, `ok` and result, the reason, and the relative screenshot path. The reason is the `reason` parameter of the tool call or procedure step; without one, the last paragraph of the agent's thinking in `activity.json` is used, cut at 500 characters.
+每个桌面动作还会往 `~/.evolution-computer-use/audit/audit-YYYY-MM-DD.jsonl` 追加一行 JSON：`at`、`session`、`turn`、`tool`、`action`、`app`、`exe`、`title`、坐标、各类标志、按键与修饰键、文本、方向、秒数、`ok` 与结果、理由，以及截图的相对路径。理由优先用工具调用或操作步骤里的 `reason`；没给就用 `activity.json` 里 Agent 最后一段思考，截到 500 字。
 
-Retention defaults: 7 days, 500 MB of screenshots, 5,000 entries. Screenshots can be switched off. The folder can be deleted at any time while the server is stopped.
+保留策略默认 7 天、截图最多 500 MB、最多 5,000 条；截图可以关掉。服务器停着的时候，整个目录随时可以删。
 
-The thought and audit panels are two halves joined by one file, `activity.json`:
+思考浮窗与审计浮窗由两半组成，靠一个文件对接，即 `activity.json`：
 
-| Half | Where | Role |
+| 半边 | 在哪 | 作用 |
 | --- | --- | --- |
-| Writer | this package's built-in DSH plugin (`plugin/lib/index.js`) | Subscribes to DSH's `agent/assistant-stream`, `session/event` and `tools/execute`, and writes the reasoning, reply and steps atomically. |
-| Reader | this package, `src/desktop/overlay.ts` | Reads `activity.json` once a second and feeds it to the WinForms overlay drawn by `scripts/windows-takeover.ps1`. |
+| 写侧 | 本包内置的 DSH 插件（`plugin/lib/index.js`） | 订阅 DSH 的 `agent/assistant-stream`、`session/event`、`tools/execute`，把思考、回复、步骤原子写入。 |
+| 读侧 | 本包 `src/desktop/overlay.ts` | 每秒读一次 `activity.json`，喂给 `scripts/windows-takeover.ps1` 画出的 WinForms 浮窗。 |
 
-The split exists because a plain stdio MCP server cannot see the host's session events; this package's plugin half supplies the writer. `--no-overlay` skips the whole subsystem.
+之所以拆成两半，是因为单纯的 stdio MCP 服务看不到宿主的会话事件；写侧由本包的插件部分提供。`--no-overlay` 会跳过整块子系统。
 
-## Inbox
+## 信箱
 
-Every two seconds the server checks for flashing taskbar buttons and notifications, keeps an excerpt of at most 60 characters, and after ten seconds of quiet reports one line per program. It never reads message contents: `inbox_read` does that when the agent decides to look. Programs are named by their own description, not by the window title. Nothing is written to disk, `--inbox-ignore` silences chosen programs, and without the Windows notification permission the inbox records a fault instead.
+服务每 2 秒检查一次任务栏闪烁与系统通知，只留最多 60 字符的摘要，安静 10 秒后按程序合并成一行告诉 Agent。它从不读取消息内容：要看内容得由 Agent 调 `inbox_read`。程序按自己的描述命名，不读窗口标题。信箱不落盘，`--inbox-ignore` 可以排除指定程序；拿不到 Windows 通知权限时记为故障。
 
-## Message log
+## 消息记录
 
-When a procedure declares a `messages` mapping, every extracted row becomes one record in `messages.jsonl`. The mapping names, for each slot, the row field or template that fills it: `accountId`, `conversationId`, `messageId` and `content` are always needed, `speakerId` except when `outgoing` is true, and `speakerName`, `conversationName` and `occurredAt` are optional; `channel` and `conversationType` (`private` or `group`) are fixed on the mapping itself. A row missing an identity field, or holding a value that is not a plain single line, is skipped and counted; `content` is truncated, and an `occurredAt` that does not parse becomes the current time. Records are de-duplicated by channel, conversation and platform message id, including ids already in the file; a failed write never fails the procedure, and routine runs are not logged. `--no-messages` turns the log off.
+操作里声明了 `messages` 映射时，抽取到的每一行会变成 `messages.jsonl` 里的一条记录。映射写明每个位置取哪一行的字段或模板：`accountId`、`conversationId`、`messageId`、`content` 必须有，`speakerId` 在 `outgoing` 为真时不需要，`speakerName`、`conversationName`、`occurredAt` 可选；`channel` 与 `conversationType`（`private` 或 `group`）直接写在映射上。缺身份字段、或值不是单行纯文本的行会被跳过并计数；`content` 会截断，`occurredAt` 解析不了时记为当前时间。记录按渠道、会话与平台消息编号去重，包括文件里已有的编号；写入失败不影响操作本身；定时运行不记录。`--no-messages` 关闭该记录。
 
-## Files
+## 文件
 
-| Path | Contents |
+| 路径 | 内容 |
 | --- | --- |
-| `<data>/browser/` | Browser profile, including the agent's logins. Never share, sync or commit it. |
-| `<data>/procedures/` | Learned procedures and category notes. |
-| `<data>/messages.jsonl` | Extracted messages. |
-| `<data>/apps-index.enc` | Encrypted program-location index (`apps-index.enc` header, AES-256-GCM). Deleted or corrupt files are rebuilt on the next scan. |
-| `<data>/init-report.json` / `.md` | The last full `init` report. |
-| `<data>/startup-report.json` | The last automatic startup scan and self-test result. |
-| `<data>/selftest/` | Screenshots taken by the self-test. |
-| `<data>/desktop-mode.json` | Written by the DSH plugin at the fixed path `~/.evolution-computer-use/desktop-mode.json`, so `--data` does not move it; the server reads it every 0.8 s. |
-| `<data>/activity.json` | What the overlay shows; the plugin writes it at that fixed path. Set `EVOCU_ACTIVITY_FILE` if the server must read another file. |
-| `<data>/activity-settings.json` | Overlay position, size, opacity and lock; written and read by the plugin at the fixed path. |
-| `<data>/appearance.json` | Banner, thought panel and audit panel appearance; plugin-written at the fixed path. Missing keys fall back to defaults. |
-| `<data>/app-policies.json` | Per-program foreground/background rules; plugin-written at the fixed path. |
-| `<data>/audit/` | `audit-YYYY-MM-DD.jsonl`, `audit-live.tsv` and `shots/`; at the fixed path `~/.evolution-computer-use/audit/`. |
-| `<data>/fonts/` | Uploaded `.ttf`/`.otf` fonts used by the banner and the panels. |
-| `<data>/overlay.lock` | Single-instance lock held by the server process; the file holds its PID. |
-| `<data>/desktop-stopped` | Present only while the emergency stop is engaged. |
-| Screenshots | System temporary folder; deleted as soon as the model has read them. |
-| Recording frames | System temporary folder (`evolution-cu-record-*`); kept until the next recording starts or desktop control is turned off, because `review` still reads them. |
+| `<data>/browser/` | 浏览器配置，含 Agent 的登录态。不要共享、同步或提交。 |
+| `<data>/procedures/` | 学会的操作与分类说明。 |
+| `<data>/messages.jsonl` | 抽取出的消息。 |
+| `<data>/apps-index.enc` | 加密的软件位置表（`apps-index.enc` 文件头，AES-256-GCM）。文件被删或损坏时，下次扫描会重建。 |
+| `<data>/init-report.json` / `.md` | 最近一次完整 `init` 的报告。 |
+| `<data>/startup-report.json` | 最近一次自动启动扫描与自测的结果。 |
+| `<data>/selftest/` | 自测过程中截的图。 |
+| `<data>/desktop-mode.json` | DSH 插件固定写到 `~/.evolution-computer-use/desktop-mode.json`，`--data` 不会移动它；服务每 0.8 秒读一次。 |
+| `<data>/activity.json` | 浮窗显示的内容，插件写到同一个固定目录；要让服务读别处，设 `EVOCU_ACTIVITY_FILE`。 |
+| `<data>/activity-settings.json` | 浮窗的位置、大小、不透明度与锁定，由插件在固定目录里读写。 |
+| `<data>/appearance.json` | 操作横幅、思考浮窗、审计浮窗的文字、颜色、字体与排版；插件写到固定目录。 |
+| `<data>/app-policies.json` | 按程序的前后台规则；插件写到固定目录，服务每 0.8 秒读一次。 |
+| `<data>/audit/` | `audit-YYYY-MM-DD.jsonl`（每个动作一行）、`audit-live.tsv`（审计浮窗读的最新 40 行）、`shots/`（截图）。 |
+| `<data>/fonts/` | 从设置页上传的字体。 |
+| `<data>/overlay.lock` | 单实例锁，由服务器进程持有，文件里是它的 PID。 |
+| `<data>/desktop-stopped` | 仅在紧急停止生效时存在。 |
+| 截图 | 系统临时目录，模型读过后立即删除。 |
+| 录制帧 | 系统临时目录（`evolution-cu-record-*`）；留到下次开始录制或关闭桌面控制时整目录删除，因为 `review` 还要读。 |
 
-## Security and risks
+## 安全与风险
 
-- **Platform rules still apply.** Automation can trip risk controls or violate a site's terms. Use a dedicated account where that matters, and do not assume a learned procedure cannot be detected.
-- **An account's permissions are the procedure's permissions.** A procedure can send messages or comments if the account can. Put those limits in the agent's instructions, and mark sending steps `outward`.
-- **Desktop control sees what is on screen.** While it is on, the agent can read any window it opens and use accounts already signed in on this PC. Turning it off and restarting withdraws that.
-- **The audit log records what the agent did and typed.** `~/.evolution-computer-use/audit/` keeps JSONL entries and screenshots for up to 7 days by default. Screenshots can be turned off in the settings, and the whole folder can be deleted while the server is stopped.
-- **The browser profile is a credential store.** Any local program that can read `<data>/browser/DevToolsActivePort` can drive the signed-in browser. Do not run untrusted programs as the same Windows user.
-- **A procedure is code-adjacent.** `script` steps run in the page's origin with the agent's session. Read a shared procedure before running it.
+- **平台规则依然适用。** 自动化可能触发风控或违反网站条款。在意的话用专用小号，也不要以为学会的操作不会被识别出来。
+- **账号的权限就是操作的权限。** 账号能发消息、能评论，操作就能。把这类限制写进 Agent 的提示，并把会外发的步骤标成 `outward`。
+- **桌面控制看得见屏幕。** 开启期间，Agent 能读它打开的任意窗口，也能用这台电脑上已登录的账号。关掉并重启即可收回。
+- **浏览器配置就是凭据库。** 本机任何能读到 `<data>/browser/DevToolsActivePort` 的程序都能驱动已登录的浏览器。不要以同一个 Windows 用户运行不可信的程序。
+- **操作文件与代码相邻。** `script` 步骤在页面源下、以 Agent 的会话执行。跑别人分享的操作之前，先读一遍。
+- **审计记录会留下痕迹。** `audit/` 记下 Agent 动了哪个程序、点了哪里、输入了什么，默认保留 7 天。不想留截图就在设置里关掉；服务器停着的时候可以直接删掉整个目录。
 
-## Multiple agents
+## 多个 Agent
 
-- Share `--procedures` to let several agents learn into one library.
-- Give each concurrently running agent its own `--profile`; two browsers cannot share a profile at once.
-- The desktop has no cross-process lock, so run one agent against it at a time. Two agents' calls would interleave real mouse and keyboard input, and nothing in the system stops either of them.
-- **Coming from dsh-world:** copy `procedures/` and `browser/` (with the browser closed). `onAlarm` procedures move from the archive database to `procedure_routines` or a scheduled `evolution-computer-use-win routines`, and extracted messages land in `messages.jsonl` instead of `archive.sqlite`.
+- 共享 `--procedures`，让多个 Agent 往同一个库里学。
+- 同时运行的 Agent 各用各的 `--profile`；两个浏览器不能共用同一份配置。
+- 桌面本身没有跨进程锁，同一时刻只让一个 Agent 操作桌面。两个 Agent 的调用会把真实的鼠标键盘输入交错在一起，系统不会拦住任何一个。
+- **从 dsh-world 迁移：** 复制 `procedures/` 与 `browser/`（浏览器需先关闭）。`onAlarm` 操作从归档数据库改为 `procedure_routines` 或定时执行 `evolution-computer-use-win routines`；抽取到的消息写进 `messages.jsonl`，不再是 `archive.sqlite`。
 
-## Development
+## 开发
 
 ```powershell
-npm install          # once
+npm install          # 只需一次
 npm run typecheck    # tsc --noEmit
 npm test             # node --test
-npm run build        # emit lib/
+npm run build        # 输出到 lib/
 ```
 
-The test suite has 221 cases (219 pass, 2 skipped) and covers the MCP protocol, the procedure format and library, appearance and policy parsing, the audit log, and the desktop driver against a fake shell. `npm run prepack` runs typecheck and build before publishing.
+测试共 221 个用例（219 通过、2 跳过），覆盖 MCP 协议、操作格式与操作库、外观与策略解析、审计记录，以及用假 shell 测的桌面驱动。`npm run prepack` 会在发布前跑类型检查与构建。
 
-## Design notes
+## 设计说明
 
-Two experiments decided the procedure format; both report summary data, and the scripts were never committed:
+操作格式由两组实验定下来；两份报告都只给汇总数据，实验脚本从未提交：
 
-- **JSON plus in-page scripts won.** Pure JSON, JSON + scripts, and whole scripts all survived equally often (9 / 8 / 9 of 25 end-to-end), but JSON + scripts repaired best (20/20) and kept paging cheap. That form is what `procedure_save` writes. ([report](docs/experiments/2026-11-12-procedure-format.md))
-- **Silent failures, not crashes, were the costlier problem.** In the first round the three formats reported "done" on a wrong replay 90, 110 and 90 times; in the second round's base branch, 105. Treating an empty result as a named failure, with an explicit `allowEmpty` opt-out, took the second-round count to zero.
-- **Repairs broke old pages.** About half of the repairs in the first round broke the previous page, because sites roll out redesigns gradually. Falling back to the two kept versions before anything outward ran cut that from 9 to 0 and raised end-to-end success from 9/25 to 16/25. ([report](docs/experiments/2026-11-13-procedure-algorithms.md))
+- **JSON + 页面脚本胜出。** 纯 JSON、JSON + 脚本、整段脚本三种形式在存活率上差不多（端到端成功 9 / 8 / 9，满分为 25），但 JSON + 脚本修补效果最好（20/20），分页任务也更省。现在 `procedure_save` 写的就是这种形式。（[报告](docs/experiments/2026-11-12-procedure-format.md)）
+- **真正的开销是静默失败，而不是崩溃。** 第一轮里三种形式分别出现 90、110、90 次「报告已完成但重放结果不对」；第二轮 base 分支是 105 次。把空结果当成指名到步骤的失败、再用 `allowEmpty` 显式放行，第二轮的次数降到 0。
+- **修补会弄坏旧页面。** 第一轮里约一半的修补弄坏了上一个页面，因为网站是逐步灰度改版的。在任何 `outward` 步骤之前退回两个保留版本，把这类事故从 9 降到 0，端到端成功率从 9/25 提到 16/25。（[报告](docs/experiments/2026-11-13-procedure-algorithms.md)）
 
-## License and credits
+## 许可与致谢
 
-MIT. Both upstream projects are MIT too, and `NOTICE.md` records the merge:
+MIT。上游两个项目也都是 MIT，`NOTICE.md` 记录了两者的合并：
 
-- [chenkezhen480/evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use) — the desktop takeover, the procedure format, the browser layer.
-- [Yu-tao-Li/dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) — the Windows MCP layout, the native helper, the DSH packaging.
+- [chenkezhen480/evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use) —— 桌面接管、操作格式、网页层。
+- [Yu-tao-Li/dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) —— Windows MCP 布局、原生助手、DSH 打包。
 
-This repository is the DSH edition of both, maintained by [thefreedoomdoor](https://github.com/thefreedoomdoor) (Copyright (c) 2026 thefreedoomdoor). It is not adapted for other agent applications.
+本仓库是两者的 DSH 版本，由 [thefreedoomdoor](https://github.com/thefreedoomdoor) 维护（Copyright (c) 2026 thefreedoomdoor），未适配其他 Agent 应用。
