@@ -286,7 +286,7 @@ A saved procedure replays in the mode it was recorded with (`where: "desktop"` i
 
 ## Overlays and appearance
 
-Three windows can appear while the agent works on this machine: a banner at the top, a thought panel in the top right and an audit panel to its left. All three are drawn by a small WinForms helper and are click-through unless unlocked. Windows is asked to keep them out of captures (`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`): a window screenshot never contains them, though a full-screen capture may still include them on some systems. Configure them on the DSH plugin settings page or by hand in `~/.evolution-computer-use/appearance.json`; every field falls back to its default, so a missing or broken file changes nothing.
+Three windows can appear while the agent works on this machine: a banner at the top, a thought panel in the top right and an audit panel to its left. All three are drawn by a small WinForms helper and are click-through unless unlocked. While background input is used, the same helper also draws a DSH pointer at each mouse action; it sits above the target window but below any app covering that window. Windows is asked to keep the overlays out of captures (`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`): a window screenshot never contains them, though a full-screen capture may still include them on some systems. Configure them on the DSH plugin settings page or by hand in `~/.evolution-computer-use/appearance.json`; every field falls back to its default, so a missing or broken file changes nothing.
 
 ### Banner
 
