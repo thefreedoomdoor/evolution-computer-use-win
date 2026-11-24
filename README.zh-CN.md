@@ -396,4 +396,4 @@ MIT。上游两个项目也都是 MIT，`NOTICE.md` 记录了两者的合并：
 - [chenkezhen480/evolution-computer-use](https://github.com/chenkezhen480/evolution-computer-use) —— 桌面接管、操作格式、网页层。
 - [Yu-tao-Li/dsh-computer-use-win](https://github.com/Yu-tao-Li/dsh-computer-use-win) —— Windows MCP 布局、原生助手、DSH 打包。
 
-本仓库是两者的 DSH 版本，未适配其他 Agent 应用。
+本仓库是两者的 DSH 版本，由 [thefreedoomdoor](https://github.com/thefreedoomdoor) 维护（Copyright (c) 2026 thefreedoomdoor），未适配其他 Agent 应用。
