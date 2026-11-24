@@ -1,5 +1,7 @@
 # evolution-computer-use-win
 
+English | [简体中文](README.zh-CN.md)
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522.16-informational)](package.json)
 [![Windows](https://img.shields.io/badge/desktop-Windows%2010%2F11-0078D4)](package.json)
