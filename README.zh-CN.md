@@ -64,7 +64,15 @@
 
 ### 作为 DSH 插件（推荐）
 
-先把源码编译一次：
+把已发布的包安装到一个目录：
+
+```powershell
+npm install evolution-computer-use-win
+```
+
+然后把 `node_modules/evolution-computer-use-win` 作为 DSH 插件包装上：打开 **设置 → 插件 → 从文件夹安装**，选择这个目录。在 Agent 会话里，也可以用 `plugin_manager` 的 `action: "install_bundle"` 并传绝对路径。一次安装就同时加上设置页并自动注册 MCP 服务——不需要再写 `mcpServers`，也不需要配套插件。
+
+如果想改源码，先编译一份 checkout，再选择 checkout 目录：
 
 ```powershell
 git clone https://github.com/thefreedoomdoor/evolution-computer-use-win
@@ -73,13 +81,9 @@ npm install
 npm run build
 ```
 
-然后把整个目录作为 DSH 插件包装上：打开 **设置 → 插件 → 从文件夹安装**，选择这个目录。在 Agent 会话里，也可以用 `plugin_manager` 的 `action: "install_bundle"` 并传绝对路径。一次安装就同时加上设置页并自动注册 MCP 服务——不需要再写 `mcpServers`，也不需要配套插件。
-
 如果之前装过独立的 `dsh-evolution-desktop-mode` 插件，请先在插件管理里移除它：本包已经内置同一套设置页，两者使用相同的插件 id，不能并存。
 
 安装后的第一次启动会在后台跑 `init`：扫描软件位置进加密表，并跑电脑操作自测、写报告（见[配置](#配置)）。随时可以运行 `evolution-computer-use-win init` 做一次完整检查。
-
-npm 包 `evolution-computer-use-win` 尚未发布；发布之后 `npm install evolution-computer-use-win` 可以替代上面的 clone 与构建步骤。
 
 > **未适配其他 Agent 应用。** MCP 服务本身与宿主无关，但只有 DSH 真正驱动它：插件这一半、浮窗写侧和设置页都是 DSH 专用的，其它宿主都未验证。
 

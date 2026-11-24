@@ -1,6 +1,6 @@
 {
   "name": "evolution-computer-use-win-plugin",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "description": "evolution-computer-use-win 内置的 DSH 设置插件：电脑操作模式、三窗外观、字体与按应用策略。目录说明用；发布、安装与 dsh.bundle 声明以根目录 package.json 为准。",

@@ -62,7 +62,15 @@ Computer use for **DeepSeek Harness** over the Model Context Protocol (stdio): t
 
 ### As a DSH plugin (recommended)
 
-Build the checkout once:
+Install the published package into a folder:
+
+```powershell
+npm install evolution-computer-use-win
+```
+
+Then install `node_modules/evolution-computer-use-win` as a DSH plugin bundle: open **Settings → Plugins → Install from folder** and choose that folder. From an agent session, `plugin_manager` with `action: "install_bundle"` and the absolute folder does the same. One install adds the settings page and registers the MCP server automatically — there is no separate `mcpServers` entry and no companion plugin.
+
+To work from source instead, build the checkout once and choose the checkout folder:
 
 ```powershell
 git clone https://github.com/thefreedoomdoor/evolution-computer-use-win
@@ -71,13 +79,9 @@ npm install
 npm run build
 ```
 
-Then install it as a DSH plugin bundle: open **Settings → Plugins → Install from folder** and choose the checkout folder. From an agent session, `plugin_manager` with `action: "install_bundle"` and the absolute folder does the same. One install adds the settings page and registers the MCP server automatically — there is no separate `mcpServers` entry and no companion plugin.
-
 If an older standalone `dsh-evolution-desktop-mode` plugin is still installed, remove it first: this package now contains that settings page, and the two use the same plugin id, so they cannot coexist.
 
 The first start after installing runs `init` in the background: it scans program locations into an encrypted index and runs the computer-use self-test, writing a report (see [Configuration](#configuration)). Run `evolution-computer-use-win init` any time you want a full check.
-
-The npm package `evolution-computer-use-win` is not published yet; once it is, `npm install evolution-computer-use-win` can replace the clone and build steps.
 
 > **Not adapted for other agent apps.** The MCP server itself is host-agnostic, but only DSH drives it: the plugin half, the overlay writer and the settings page are DSH-specific, and no other host has been tested.
 
