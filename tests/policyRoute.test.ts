@@ -8,6 +8,9 @@ import { tmpdir } from 'node:os';
 import { createComputerUse } from '../src/index.ts';
 import { forgetPolicies, matchAppPolicy, parsePolicies, policyMode } from '../src/policies.ts';
 
+// 真机上的仲裁走跨进程 broker；这些假助手单测只要一个进程内的本地闸门，也不会拉起任何子进程。
+process.env.EVOLUTION_CU_ARBITER = 'inproc';
+
 const WINDOW = { hwnd: 67996, pid: 14568, exe: 'Weixin', title: '微信', minimized: false, width: 1750, height: 1400 };
 const NOTE = { hwnd: 500, pid: 9, exe: 'notepad', title: '记事本', minimized: false, width: 1200, height: 800 };
 
@@ -51,8 +54,8 @@ function harness(t: test.TestContext, options: { policies?: unknown; refuseForeg
     desktopDriver: () => helper(backgroundLog),
     foregroundDriver: () => helper(foregroundLog, counters, options.refuseForeground),
   });
-  t.after(() => {
-    computer.stop();
+  t.after(async () => {
+    await computer.stop();
     delete process.env.EVOCU_POLICIES_FILE;
     delete process.env.EVOCU_AUDIT_DIR;
     forgetPolicies();

@@ -5,8 +5,10 @@
  * 所以由宿主插件订阅事件，把活动原子写进 ~/.evolution-computer-use/activity.json；
  * evolution 的 src/desktop/overlay.ts 每秒读该文件，转发给浮窗助手画出来。
  *
- * 浮窗只在 agent 真的操作电脑时出现：回合开始、纯思考、纯写代码都不认领显示，
+ * 普通模式下浮窗只在 agent 真的操作电脑时出现：回合开始、纯思考、纯写代码都不认领显示，
  * 只有 tools/execute 命中桌面/网页工具才创建 owner（与上游一致）。
+ * 多鼠标任务模式下例外：当前选中且 enabled root 的真实 stream 也能建立/接续唯一主思考 owner，
+ * 子 Agent 的 step/text 不进入主思考，只显示在 Companion 行。
  *
  * 精简掉的上游功能：跨会话忙碌锁、AI 摘要、屏幕接管提示。
  * 本文件不用模板字符串：整份内容要能被原样写进磁盘。
@@ -115,14 +117,39 @@ function addAction(progress, label) {
  * 订阅 DSH 事件，把活动写进 activity.json。
  * @param {any} ctx 宿主插件上下文
  * @param {string} file activity.json 路径
- * @param {{ getSettings?(): object, getLocale?(): string }} options 设置项与界面语言
+ * @param {{ getSettings?(): object, getLocale?(): string, getMultiMouse?(): object|null }} options 设置项、界面语言与多鼠标 runtime
  */
 export function installActivity(ctx, file, options) {
   const settings0 = options || {};
   const getSettings = settings0.getSettings || (() => ({}));
   const getLocale = settings0.getLocale || (() => 'zh');
+  // 多鼠标任务模式（plugin/lib/multi-mouse-runtime.mjs 的进程单例）。拿不到就照旧单窗逻辑。
+  const getMultiMouse = settings0.getMultiMouse || (() => null);
+  const multiMouse = () => { try { return getMultiMouse() || null; } catch { return null; } };
+  const rootIdOf = (agent, session) => {
+    try {
+      const subs = (ctx && ctx.subagents)
+        || (ctx && typeof ctx.get === 'function' ? ctx.get('subagents') : null);
+      const root = subs && typeof subs.rootOf === 'function' ? subs.rootOf(agent) : null;
+      if (root && root.id) return String(root.id);
+    } catch { /* 没有 subagents 服务时退回会话 id */ }
+    return session && session.id ? String(session.id) : null;
+  };
+  // 当前“本任务”的根：必须同时是 runtime 显式选中的 root 且处于 enabled。
+  // 只有这种 root 才能作为多鼠标模式下的唯一主思考数据源；其它 root/子 Agent 一律不碰 activity。
+  const activeMulti = () => {
+    const runtime = multiMouse();
+    if (!runtime || typeof runtime.activeRootId !== 'function' || typeof runtime.getMode !== 'function') return null;
+    let rootId = null;
+    try { rootId = runtime.activeRootId(); } catch { rootId = null; }
+    if (!rootId) return null;
+    let mode = null;
+    try { mode = runtime.getMode(rootId); } catch { mode = null; }
+    if (!mode || mode.enabled !== true) return null;
+    return { runtime: runtime, rootId: String(rootId), mode: mode };
+  };
 
-  let owner;      // { id, session, turn, pending, otherPending, lastActive, desktop, progress }
+  let owner;      // { id, session, turn, pending, otherPending, lastActive, desktop, multi, progress }
   let lingering;  // { owner, until } —— 回合结束后继续显示一会儿
   let closed = false;
   let lastWarn = 0;
@@ -131,12 +158,17 @@ export function installActivity(ctx, file, options) {
   // 回合里第一次电脑操作之前流出的文本（多半是模型正在决定要不要用电脑）。
   // 只留在内存，每个会话一条；这一回合真的用了电脑才灌进浮窗，否则永远不显示。
   const early = new Map();
+  // 只释放本插件自己向 runtime 订阅的监听；共享 runtime 的进程级所有权不属于 settings 插件。
+  const runtimeUnsubs = [];
+  let multiEpoch = 0; // 已接入过的主思考任务 epoch；任务切换时不能复用旧文本
+  let lastThinkingSignature = ''; // Companion.thinking 最近一次同步的内容指纹（避免每秒重复写盘）
 
   // 一次操作中途卡住（等审批、等用户登录）时不能永远霸着浮窗。
   // 只按「上一次真的操作电脑（桌面/网页工具）」计时：之后即使还在写代码、跑命令，
   // 连续 IDLE_MS 没有电脑操作也把浮窗收起来。
   const expireIdle = () => {
-    if (owner && owner.pending === 0 && Date.now() - (owner.lastDesktop || owner.lastActive) >= IDLE_MS) owner = undefined;
+    // 多鼠标模式的主对话思考由模式开关和回合事件管理，不按普通桌面动作的 30 秒续命规则收掉。
+    if (owner && !owner.multi && owner.pending === 0 && Date.now() - (owner.lastDesktop || owner.lastActive) >= IDLE_MS) owner = undefined;
   };
 
   const publish = () => {
@@ -166,6 +198,8 @@ export function installActivity(ctx, file, options) {
       // 关掉浮窗时不写文本：文本留在内存里，中途打开还能看到整个回合。
       if (shown && settings.overlayEnabled !== false) body.progress = shown.progress;
       if (!owner && lingering) body.lingerUntil = lingering.until;
+      // 多鼠标模式的主思考同时写进 runtime 的 Companion.thinking（子 Agent 文本永远不进来）。
+      if (shown && shown.multi) syncRootThinking(shown);
       atomicJson(file, body);
       needsPublish = false;
     } catch (error) {
@@ -193,6 +227,123 @@ export function installActivity(ctx, file, options) {
     }
     return progress;
   };
+
+  /**
+   * 多鼠标模式下，为当前选中且 enabled 的 root 建立/接续唯一的主思考 owner。
+   * 不要求 root 亲自调用桌面工具：真实 stream 的 step/reasoning 就能让它出现。
+   * 子 Agent session 永远不会在这里建 owner（调用方已按 active.rootId 过滤）。
+   */
+  function ensureMultiOwner(session, turn) {
+    const active = activeMulti();
+    if (!active || !session || String(session.id) !== active.rootId) return null;
+    if (turn === undefined || turn === null) return null;
+    if (owner && owner.id !== active.rootId) owner = undefined;
+    if (lingering && lingering.owner.id !== active.rootId) lingering = undefined;
+    if (owner && owner.id === active.rootId && owner.turn === turn) {
+      owner.multi = true;
+      return owner;
+    }
+    // 已经 linger 的 root 主思考被重新开启/继续时直接接回来，不丢已完成回合的文本。
+    if (!owner && lingering && lingering.owner.id === active.rootId && lingering.owner.turn === turn) {
+      owner = lingering.owner;
+      owner.multi = true;
+      lingering = undefined;
+      return owner;
+    }
+    owner = {
+      id: active.rootId,
+      session: { id: active.rootId },
+      turn: turn,
+      pending: 0,
+      otherPending: 0,
+      lastActive: Date.now(),
+      lastDesktop: 0,       // 没亲自操作电脑也保留主思考；indicator 仍为 false
+      desktop: false,
+      multi: true,
+      progress: startOwner({ id: active.rootId }, turn),
+    };
+    lingering = undefined;
+    // 早期种子可能已有思考文本，让状态直接反映 thinking/replying，而不是一直 waiting。
+    if (owner.progress.reply) owner.progress.status = 'replying';
+    else if (owner.progress.reasoning) owner.progress.status = 'thinking';
+    needsPublish = true;
+    return owner;
+  }
+
+  /** 把当前 root 主思考同步进 runtime 的 Companion.thinking（reasoning 不再为空）。 */
+  function syncRootThinking(shown) {
+    if (!shown || !shown.multi) return;
+    const active = activeMulti();
+    if (!active || shown.id !== active.rootId) return;
+    const progress = shown.progress || {};
+    // 一秒一刷的定时器也会走这里；内容没变就不重复写 Companion 文件、不重复通知订阅者。
+    const signature = JSON.stringify([
+      active.rootId, progress.status || '', progress.step, progress.action || '',
+      progress.reasoning || '', progress.reply || '',
+    ]);
+    if (signature === lastThinkingSignature) return;
+    lastThinkingSignature = signature;
+    try {
+      if (typeof active.runtime.publishRootThinking === 'function') {
+        active.runtime.publishRootThinking(active.rootId, {
+          reasoning: progress.reasoning || '',
+          reply: progress.reply || '',
+          status: progress.status || 'thinking',
+          action: progress.action || '',
+          step: progress.step,
+          intent: progress.intent || '',
+        });
+      }
+    } catch { /* Companion 文本同步失败不影响工具/浮窗 */ }
+  }
+
+  /**
+   * runtime 模式切换（开启/关闭/切任务）的当下立即处理，不等下一次工具或 20s linger 到期。
+   * 开启时：清掉所有子 Agent 的 owner/lingering，只保留当前 root 的主思考；
+   * 关闭时：多鼠标专用的 root owner 立即收起，普通 owner 恢复原 30s 桌面动作语义。
+   */
+  function onRuntimeMode() {
+    try {
+      const active = activeMulti();
+      if (!active) {
+        multiEpoch = 0;
+        lastThinkingSignature = '';
+        if (owner && owner.multi) {
+          if (owner.desktop) owner.multi = false;
+          else owner = undefined;
+        }
+        if (lingering && lingering.owner && lingering.owner.multi) {
+          if (lingering.owner.desktop) lingering.owner.multi = false;
+          else lingering = undefined;
+        }
+        publish();
+        return;
+      }
+      const rootId = active.rootId;
+      // 同一 root 的任务切换（epoch++）要丢掉上一任务的主思考文本，不能把旧内容当新任务。
+      const epoch = Number.isInteger(active.mode.epoch) ? active.mode.epoch : 0;
+      if (multiEpoch && epoch && epoch !== multiEpoch) {
+        if (owner && owner.id === rootId) owner = undefined;
+        lingering = undefined;
+        early.delete(rootId);
+        lastThinkingSignature = '';
+      }
+      multiEpoch = epoch;
+      // 切换 root 或从子 Agent 显示切过来时，child 的 owner/lingering 必须当场丢弃。
+      if (owner && owner.id !== rootId) owner = undefined;
+      if (lingering && lingering.owner.id !== rootId) lingering = undefined;
+      if (owner && owner.id === rootId) owner.multi = true;
+      if (!owner && lingering && lingering.owner.id === rootId) {
+        owner = lingering.owner;
+        owner.multi = true;
+        lingering = undefined;
+      }
+      const seed = early.get(rootId);
+      const turn = owner && owner.id === rootId ? owner.turn : (seed && seed.turn);
+      if (turn !== undefined && turn !== null) ensureMultiOwner({ id: rootId }, turn);
+      publish();
+    } catch { /* 模式切换只影响展示，绝不向外抛错 */ }
+  }
 
   /**
    * 一步开始。浮窗已经出现（这一回合真的操作过电脑）就推进到下一步；
@@ -271,6 +422,12 @@ export function installActivity(ctx, file, options) {
   ctx.on('session/event', (session, event) => {
     const data = (event && event.data) || {};
     const turn = data.turn;
+    // 多鼠标模式：只有当前选定且 enabled 的 root 会话能进入 activity；子 Agent 的 turn/step/chunk 全部忽略。
+    const active = activeMulti();
+    if (active && String(session.id) !== active.rootId) {
+      if (event && event.type === 'turn/end') early.delete(session.id);
+      return;
+    }
     if (event && event.type === 'turn/end') {
       early.delete(session.id);
       if (owner && owner.id === session.id && owner.turn === turn) {
@@ -279,18 +436,29 @@ export function installActivity(ctx, file, options) {
         progress.status = kind === 'aborted' ? 'stopped' : kind === 'error' ? 'failed' : 'done';
         progress.endedAt = Date.now();
         progress.action = '';
-        lingering = LINGER_MS > 0 ? { owner: owner, until: Date.now() + LINGER_MS } : undefined;
-        owner = undefined;
+        // 多鼠标模式：主思考是这一任务的唯一思考框，回合结束也继续留着（直到关模式/换任务），
+        // 不能像普通模式那样 20 秒后消失，否则任务进行中会出现“没有主思考”的空窗。
+        if (!owner.multi) {
+          lingering = LINGER_MS > 0 ? { owner: owner, until: Date.now() + LINGER_MS } : undefined;
+          owner = undefined;
+        }
       }
       publish();
       return;
     }
     const step = Number.isSafeInteger(data.step) ? data.step : undefined;
     // 回合开始不再认领浮窗：只有真的调用桌面/网页工具才出现（见 tools/execute）。
-    if (event && event.type === 'step/start') stepStarted(session.id, turn, step);
+    // 但多鼠标模式例外：root 没有亲自 desktop 时，真实 step/stream 也要能让主思考出现。
+    if (event && event.type === 'step/start') {
+      if (active) ensureMultiOwner(session, turn);
+      stepStarted(session.id, turn, step);
+    }
     // 兼容旧宿主：思考文本曾经是按 assistant/chunk 事件流出来的。
     const chunk = event && event.type === 'assistant/chunk' ? data.chunk : undefined;
-    if (chunk) acceptText(session.id, turn, step, chunk);
+    if (chunk) {
+      if (active) ensureMultiOwner(session, turn);
+      acceptText(session.id, turn, step, chunk);
+    }
   }, { global: true });
 
   // DSH 把模型输出按帧流出来：start 帧给出这一回合哪一步，chunk 帧带文本，
@@ -301,6 +469,11 @@ export function installActivity(ctx, file, options) {
     const frame = payload && payload.frame;
     const sessionId = payload && payload.agent && payload.agent.session && payload.agent.session.id;
     if (!sessionId || !frame) return;
+    // 多鼠标模式只接受当前 selected+enabled root 自己的流；子 Agent 文本不得污染主思考。
+    const active = activeMulti();
+    const rootId = rootIdOf(payload && payload.agent, payload && payload.agent && payload.agent.session);
+    const multiRoot = !!(active && String(sessionId) === active.rootId && String(rootId) === active.rootId);
+    if (active && !multiRoot) return;
     if (frame.type === 'start') {
       if (!Number.isSafeInteger(frame.turn)) return;
       const step = Number.isSafeInteger(frame.step) ? frame.step : undefined;
@@ -309,6 +482,7 @@ export function installActivity(ctx, file, options) {
       while (attempts.size > 32) attempts.delete(attempts.keys().next().value);
       // 重来的那一步：丢掉上一次尝试留下的文本。
       if (retried.delete(key)) clearStepText(sessionId, frame.turn, step);
+      if (multiRoot) ensureMultiOwner(payload.agent.session, frame.turn);
       stepStarted(sessionId, frame.turn, step);
       return;
     }
@@ -322,7 +496,10 @@ export function installActivity(ctx, file, options) {
       }
       return;
     }
-    if (frame.type === 'chunk') acceptText(sessionId, attempt.turn, attempt.step, frame.chunk);
+    if (frame.type === 'chunk') {
+      if (multiRoot) ensureMultiOwner(payload.agent.session, attempt.turn);
+      acceptText(sessionId, attempt.turn, attempt.step, frame.chunk);
+    }
   }, { global: true });
 
   ctx.on('tools/execute', async (exec, next) => {
@@ -365,6 +542,23 @@ export function installActivity(ctx, file, options) {
 
     // 桌面/网页工具：浮窗只在这里出现。
     if (!session || turn === undefined || turn === null) return next();
+    // 多鼠标任务模式：先登记活跃 root（供设置页选“本任务”），
+    // 再只保留该 root 的主思考——子 Agent 的思考不占浮窗，它的最近动作改由 Companion 行显示。
+    const runtime = multiMouse();
+    const rootId = rootIdOf(exec.agent, session);
+    if (runtime && rootId) { try { runtime.observeRoot({ rootId: rootId }); } catch { /* 展示桥失败不影响工具 */ } }
+    // 当前存在“选中且 enabled”的 root 时，它是唯一主思考数据源：
+    // 只有该 root 自己的会话能进入浮窗；任何子 Agent、其它 root 的真实动作都只走 Companion/指针。
+    const active = activeMulti();
+    if (active) {
+      if (String(rootId) !== active.rootId || String(session.id) !== active.rootId) return next();
+      ensureMultiOwner(session, turn);
+    } else if (runtime && rootId) {
+      // 兼容只有一个 root 开启但尚未被 activeRootId 识别的旧边界：仍按该 root 的 enabled 跳过子 Agent。
+      let mode = null;
+      try { mode = runtime.getMode(rootId); } catch { mode = null; }
+      if (mode && mode.enabled && String(session.id) !== rootId) return next();
+    }
     // 别的会话正占着浮窗：这一次不抢显示，工具照常执行。
     if (owner && owner.id !== session.id) return next();
     expireIdle();
@@ -377,6 +571,8 @@ export function installActivity(ctx, file, options) {
       lingering = undefined;
     }
     const current = owner;
+    // 多鼠标模式下 root 亲自操作电脑：这个 owner 仍是“主思考”，不能被 30 秒空闲规则收掉。
+    if (active) current.multi = true;
     // 只有真的动用户鼠标键盘才算（纯网页操控在后台浏览器里，不算）。
     if (!/__page_\w+$/.test(name)) current.desktop = true;
     const action = addAction(current.progress, label || shortName(name));
@@ -406,6 +602,20 @@ export function installActivity(ctx, file, options) {
     }
   }, { global: true });
 
+  // 订阅 runtime 的模式切换：开启/关闭/切任务的当下重选或清掉显示，不等下一次工具或 TTL。
+  // 卸载时只调用各自的 unsubscribe，绝不 dispose 共享 runtime（gateway/probe 仍在用同一个实例）。
+  try {
+    const runtime = multiMouse();
+    if (runtime && typeof runtime.subscribe === 'function') {
+      const off = runtime.subscribe('mode', onRuntimeMode);
+      if (typeof off === 'function') runtimeUnsubs.push(off);
+    }
+  } catch (error) {
+    console.error('[evolution-desktop-mode] 订阅多鼠标模式失败：', error);
+  }
+  // 插件晚于模式开启安装时也立即接上当前 root 的主思考，而不是等下一次工具。
+  try { onRuntimeMode(); } catch { /* 初始化同步失败不阻塞插件 */ }
+
   // 一秒一刷：文本是攒在内存里的，靠这个节拍写出去；linger 到点也靠这一次收掉。
   const timer = setInterval(() => {
     if ((owner || needsPublish || (lingering && Date.now() >= lingering.until)) && !closed) {
@@ -414,6 +624,9 @@ export function installActivity(ctx, file, options) {
   }, 1000);
 
   ctx.on('dispose', () => {
+    for (const off of runtimeUnsubs.splice(0)) {
+      try { off(); } catch { /* 监听器已经没了也没关系 */ }
+    }
     closed = true;
     clearInterval(timer);
     owner = undefined;

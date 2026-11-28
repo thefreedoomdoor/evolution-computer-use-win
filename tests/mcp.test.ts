@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -9,6 +9,25 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { serveMcp, toContent, type McpTools } from '../src/mcp/server.ts';
 import type { ToolResult } from '../src/tool.ts';
+
+// A throwaway user profile for every CLI child in this file, so the real
+// ~/.evolution-computer-use (desktop-mode.json polling, appearance, audit, policies)
+// is never read: no live window, inbox helper or desktop helper can start.
+const isoHome = mkdtempSync(join(tmpdir(), 'ecu-home-'));
+after(() => rmSync(isoHome, { recursive: true, force: true }));
+/** Child env: temp profile, no live EVOCU_ or DSH_ paths, no startup scan/selftest. */
+function cliEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    EVOLUTION_CU_NO_AUTO_INIT: '1',
+    USERPROFILE: isoHome,
+    HOME: isoHome,
+    APPDATA: join(isoHome, 'AppData', 'Roaming'),
+    LOCALAPPDATA: join(isoHome, 'AppData', 'Local'),
+  };
+  for (const key of ['EVOCU_AUDIT_DIR', 'EVOCU_ACTIVITY_FILE', 'EVOCU_APPEARANCE_FILE', 'EVOCU_POLICIES_FILE', 'DSH_PROFILE_DIR']) delete env[key];
+  return env;
+}
 
 /** A client on the other end of a pipe: sends lines, reads answers by id. */
 function client(output: NodeJS.ReadableStream, input: NodeJS.WritableStream) {
@@ -91,7 +110,7 @@ test('toContent leaves out captions that are not there', () => {
 });
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
-const node = (args: string[]) => spawn(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', CLI, ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, EVOLUTION_CU_NO_AUTO_INIT: '1' } });
+const node = (args: string[]) => spawn(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', CLI, ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: cliEnv() });
 function run(args: string[]): Promise<{ code: number | null; out: string }> {
   return new Promise(resolve => {
     const child = node(args); let out = '';
@@ -102,7 +121,7 @@ function run(args: string[]): Promise<{ code: number | null; out: string }> {
 
 test('the CLI serves MCP over stdio: an agent learns a procedure, finds it again, and a second agent on the same data finds it too', async t => {
   const data = mkdtempSync(join(tmpdir(), 'ecu-cli-')); t.after(() => rmSync(data, { recursive: true, force: true }));
-  const serve = () => { const child = node(['--data', data]); t.after(() => child.kill()); return { child, c: client(child.stdout, child.stdin) }; };
+  const serve = () => { const child = node(['--data', data, '--no-overlay', '--no-inbox']); t.after(() => child.kill()); return { child, c: client(child.stdout, child.stdin) }; };
   const one = serve();
   const init = await one.c.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
   assert.match((init.result as { instructions: string }).instructions, /computer_use/);

@@ -306,8 +306,42 @@ export function readAppearance(): Appearance {
   return value;
 }
 
-/** The banner's words with `{app}` filled in; trailing space from an empty name goes away. */
+/** The multi-mouse live file the plugin writes (same directory as activity.json). */
+export function companionLiveFile(): string {
+  const dir = process.env.EVOCU_DATA_DIR?.trim();
+  return join(dir || sharedDataDir(), 'companion-live.json');
+}
+
+/**
+ * The words for a multi-mouse task, or undefined when that mode is off.
+ *
+ * A14: while the task mode runs, the banner says "DSH正在完成{task}" and the
+ * application name never reaches the words — the text is rebuilt here instead of
+ * going through the `{app}` substitution, so no program name can slip in. The
+ * file is written by the plugin (multi-mouse-runtime.mjs) and read fresh on every
+ * call, so switching the mode off restores the ordinary banner immediately.
+ */
+export function taskBannerText(): string | undefined {
+  // Under the test runner without an explicit data directory, the developer's own
+  // task state must not decide what a test sees (same rule as src/audit.ts).
+  if (process.env.NODE_TEST_CONTEXT && !process.env.EVOCU_DATA_DIR?.trim()) return undefined;
+  let live: unknown;
+  try { live = JSON.parse(readFileSync(companionLiveFile(), 'utf8').replace(/^\uFEFF/, '')); }
+  catch { return undefined; }
+  if (!live || typeof live !== 'object') return undefined;
+  const view = live as { enabled?: unknown; task?: unknown };
+  if (view.enabled !== true) return undefined;
+  const task = typeof view.task === 'string' ? view.task.replace(/\s+/g, ' ').trim() : '';
+  return task ? 'DSH正在完成' + task : 'DSH正在完成当前任务';
+}
+
+/**
+ * The banner's words: a running multi-mouse task first (A14), otherwise the
+ * configured template with `{app}` filled in; trailing space from an empty name goes away.
+ */
 export function bannerText(app?: string): string {
+  const task = taskBannerText();
+  if (task) return task;
   const filled = readAppearance().banner.text.replaceAll('{app}', app?.trim() ?? '');
   return filled.trim() || 'DSH正在操作';
 }

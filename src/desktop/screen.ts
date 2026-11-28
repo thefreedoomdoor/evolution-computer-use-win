@@ -8,6 +8,7 @@ import type { DesktopDriver } from './driver.ts';
 import { createRecording } from './recording.ts';
 import { createTurns, type DesktopResult } from './turns.ts';
 import { watching } from './watching.ts';
+import { CancelledError, UncertainError, bindWindow, emitPhase, setWindowInfo } from './arbiter.ts';
 
 export type Screen = ReturnType<typeof createScreen>;
 const SETTLE_MS = 400, APPEAR_MS = 10_000, WINDOWS_SHOWN = 30;
@@ -35,6 +36,8 @@ export function createScreen(deps: {
   const settleMs = deps.settleMs ?? SETTLE_MS, appearMs = deps.appearMs ?? APPEAR_MS;
   let view: View | undefined, shots = 0, front: string | undefined, frontInfo: { exe?: string; title?: string } | undefined, frontHwnd: number | undefined;
   const wrap = (driver: Pick<DesktopDriver, 'call'>) => (op: string, args: Record<string, unknown> = {}) => driver.call(op, args).catch((error: unknown) => {
+    // Keep a stop and an unknown outcome recognisable instead of folding both into a plain failure.
+    if (error instanceof CancelledError || error instanceof UncertainError) throw error;
     throw new Error(`没做成：${error instanceof Error ? error.message : String(error)}`);
   });
   const hands = wrap(deps.hands), eyes = wrap(deps.eyes);
@@ -168,6 +171,11 @@ export function createScreen(deps: {
     }),
   });
 
+  // In foreground mode the screen coordinates the helper is given are the physical ones, so a pointer can be drawn directly.
+  function noteFront(): void {
+    if (frontHwnd !== undefined) bindWindow(frontHwnd);
+    setWindowInfo({ app: front, exe: frontInfo?.exe, title: frontInfo?.title });
+  }
   const run: Record<string, (input: DesktopInput) => Promise<DesktopResult>> = {
     record: input => watch.record(input),
     stop: () => watch.stop(),
@@ -177,17 +185,27 @@ export function createScreen(deps: {
     close: () => closeWindow(),
     click: async input => {
       const at = onScreen(input.x, input.y);
+      noteFront();
+      emitPhase('approaching', { space: 'physical' });
       await hands('rclick', { x: at.x, y: at.y, right: input.right === true, count: input.double ? 2 : 1, hold: holdMs(input.hold) });
+      emitPhase('executing', { space: 'physical', sampleSource: 'screen', sampleMs: Date.now(), to: { x: at.x, y: at.y } });
       return after(pressed('点击', input.hold), at.local);
     },
     drag: async input => {
       const from = onScreen(input.x, input.y), to = onScreen(input.x2, input.y2);
+      noteFront();
+      emitPhase('approaching', { space: 'physical', to: { x: to.x, y: to.y } });
       await hands('rdrag', { x: from.x, y: from.y, x2: to.x, y2: to.y, right: input.right === true, hold: holdMs(input.hold) });
+      // The travel arrives as live progress lines while the button is down; only the ends are confirmed here.
+      emitPhase('executing', { space: 'physical', sampleSource: 'screen', sampleMs: Date.now(), from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } });
       return after(dragged(input.hold), to.local);
     },
     move: async input => {
       const at = onScreen(input.x, input.y);
+      noteFront();
+      emitPhase('approaching', { space: 'physical' });
       await hands('rmove', { x: at.x, y: at.y });
+      emitPhase('executing', { space: 'physical', sampleSource: 'screen', sampleMs: Date.now(), to: { x: at.x, y: at.y } });
       return after('已把鼠标移过去，没有点击。', at.local);
     },
     type: async input => {
@@ -207,7 +225,10 @@ export function createScreen(deps: {
       if (!step) throw new Error('direction 只能是 up、down、left 或 right');
       if (!view) throw new Error('还没看过屏幕：先 desktop shot');
       const at = input.x === undefined && input.y === undefined ? onScreen(view.width / 2, view.height / 2) : onScreen(input.x, input.y);
+      noteFront();
+      emitPhase('approaching', { space: 'physical' });
       await hands('rscroll', { x: at.x, y: at.y, up: step[0], right: step[1] });
+      emitPhase('executing', { space: 'physical', sampleSource: 'screen', sampleMs: Date.now(), to: { x: at.x, y: at.y } });
       return after('已滚动。');
     },
     zoom: async input => {

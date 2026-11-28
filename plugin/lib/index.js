@@ -8,6 +8,7 @@
  *       三窗外观：GET/POST /appearance
  *       字体：    GET/POST/DELETE /fonts
  *       按应用：  GET /apps、GET/POST /policies
+ *       网关传输：GET/POST /transport（走宿主 configEditor 改 toolTransport，并让宿主重挂载该行）
  *     路径都在 /api/dsh-evolution-desktop-mode 下，数据文件在 ~/.evolution-computer-use/
  *     （契约见 docs/design/appearance.md）。
  *  3. 挂上 lib/activity.mjs：订阅 DSH 的思考流、回合事件和工具执行，把「正在想什么 /
@@ -19,6 +20,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { installActivity } from './activity.mjs';
 import { createSettingsApi } from './routes.js';
+import { getMultiMouseRuntime } from './multi-mouse-runtime.mjs';
 
 export const name = 'evolution-desktop-mode';
 
@@ -84,8 +86,18 @@ export function apply(ctx, config) {
   // activity.mjs 要在接口建好之后才能挂；浮窗刷新用闭包兜住，
   // 下面再用 setNotify 换成正式的 publish（写完后立刻刷新桌面浮窗）。
   let activity = null;
+  // 多鼠标任务模式是 DSH 进程级共享资源：gateway、probe、设置页/活动采集共用同一个实例。
+  // 设置插件卸载时只释放自己的 activity/routes 订阅，绝不能 dispose 仍被其他消费者使用的 runtime
+  // （否则 listeners 被清空、旧引用变死实例）。显式 dispose 只用于进程整体结束/测试。
+  let multiMouse = null;
+  try {
+    multiMouse = getMultiMouseRuntime();
+  } catch (error) {
+    console.error('[evolution-desktop-mode] 多鼠标 runtime 初始化失败：', error);
+  }
   const api = createSettingsApi({
     config: config ?? {},
+    getMultiMouse: () => multiMouse,
     onOverlayChanged: () => {
       try {
         if (activity && typeof activity.publish === 'function') activity.publish();
@@ -106,6 +118,8 @@ export function apply(ctx, config) {
     activity = installActivity(ctx, api.activityFile, {
       getSettings: () => api.currentOverlay(),
       getLocale: () => readDshLocale(ctx),
+      // activity 自己用它订阅 mode；runtime 仍是进程级单例，设置插件不拥有其生命周期。
+      getMultiMouse: () => multiMouse,
     });
   } catch (error) {
     console.error('[evolution-desktop-mode] 浮窗活动采集启动失败：', error);
@@ -134,11 +148,18 @@ export function apply(ctx, config) {
     } catch (error) {
       console.error('[evolution-desktop-mode] 注册设置接口失败：', error);
     }
+    // 传输控件走宿主的 configEditor：每次请求时读一次，服务不在时只有 /transport 回 503，
+    // 设置页其它接口（模式、外观、字体、按应用、多鼠标）照常，所以它不是整个设置页的硬依赖。
+    api.setConfigEditor(() => (typeof sctx?.get === 'function' ? sctx.get('configEditor') : undefined));
     if (typeof ctx?.on === 'function') {
       ctx.on('dispose', () => disposers.forEach(drop));
+      ctx.on('dispose', () => api.setConfigEditor(null));
     }
   };
 
   if (typeof ctx?.inject === 'function') ctx.inject(['webServer'], register);
   else register(ctx);
+
+  // 本插件不注册 runtime.dispose：activity 与 routes 各自在自己的 ctx.on('dispose') 里清理，
+  // runtime 由进程生命周期或显式 dispose（整体结束/测试）拥有。
 }

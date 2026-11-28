@@ -1,0 +1,19 @@
+{
+  "name": "@local/desktop-action-evidence",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Acceptance-only sidecar that records bounded desktop action events (requestId/leaseId) of one root from the multi-mouse runtime into a fresh JSONL run folder. Off unless enabled with an exact rootId.",
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

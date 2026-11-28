@@ -30,13 +30,25 @@ test('requests are matched to their answers, errors keep the method name, events
   assert.equal(await seen, 'Page.loadEventFired');
 });
 
-test('a request the browser never answers times out, and a closed socket fails what is pending', async t => {
+test('a request the browser never answers times out on its own budget', async t => {
   const browser = await fakeBrowser(t, () => undefined);
   const cdp = await connectCdp(browser.url, { timeoutMs: 30 });
-  await assert.rejects(cdp.send('Runtime.evaluate'), /Runtime\.evaluate: 浏览器没有回应/);
+  t.after(() => cdp.close());
+  await assert.rejects(cdp.send('Runtime.evaluate'), (error: unknown) => error instanceof Error && error.message === 'Runtime.evaluate: 浏览器没有回应');
+});
+
+test('a socket closed with a request in flight rejects that request as a disconnect, and every later send too', async t => {
+  // The close below happens only after the server has the request in hand, and this connection's budget is far longer
+  // than a close handshake: what the pending promise sees is the disconnect, never a short timeout racing it.
+  let seen: (method: string) => void = () => {};
+  const received = new Promise<string>(resolve => { seen = resolve; });
+  const browser = await fakeBrowser(t, message => { seen(message.method); return undefined; });
+  const cdp = await connectCdp(browser.url, { timeoutMs: 5_000 });
+  t.after(() => cdp.close());
   const pending = cdp.send('Page.navigate');
+  assert.equal(await received, 'Page.navigate');
   browser.sockets[0]!.close();
-  await assert.rejects(pending, /浏览器连接已断开/);
+  await assert.rejects(pending, (error: unknown) => error instanceof Error && error.message === '浏览器连接已断开');
   assert.equal(cdp.closed, true);
-  await assert.rejects(cdp.send('Page.enable'), /浏览器连接已断开/);
+  await assert.rejects(cdp.send('Page.enable'), (error: unknown) => error instanceof Error && error.message === '浏览器连接已断开');
 });

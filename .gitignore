@@ -7,3 +7,10 @@ repos/
 demo/
 tools/
 .tmp-*
+
+# local-only: verification artifacts, real browser profiles/caches, stray path dirs
+# 本地产物与浏览器 profile（含登录数据/缓存/数据库）不提交
+/artifacts/
+/reports/
+/%SystemDrive%/
+/undefined/

@@ -9,6 +9,8 @@ import { isRunning } from './processes.ts';
 import { createRecording } from './recording.ts';
 import { createTurns, type DesktopResult } from './turns.ts';
 import { watching } from './watching.ts';
+import type { PhysicalPoint } from '../tool.ts';
+import { CancelledError, UncertainError, bindWindow, emitPhase, setWindowInfo } from './arbiter.ts';
 
 export { STOPPED, type DesktopAction, type DesktopResult } from './turns.ts';
 
@@ -100,6 +102,8 @@ export function createDesktop(deps: {
   let known: Map<number, string> | undefined, acted: { what: string; at: number } | undefined;
 
   const call = (op: string, args: Record<string, unknown> = {}) => deps.driver.call(op, args).catch((error: unknown) => {
+    // A stop or an unknown outcome must stay recognisable: the arbiter turns these into cancelled/uncertain, never failed.
+    if (error instanceof CancelledError || error instanceof UncertainError) throw error;
     const why = error instanceof Error ? error.message : String(error);
     // Windows keeps an ordinary program away from an administrator's windows; background mode has no way round that.
     if (/ELEVATED/.test(why)) throw new Error(`${window?.app ?? '这个窗口'}是以管理员权限运行的程序，后台模式截不到、也点不了它。要操作它，请用户切到前台模式。`);
@@ -379,6 +383,30 @@ export function createDesktop(deps: {
       throw new Error(`这个程序（${hit[1]}）不处理后台模拟的${what}，后台模式动不了它。不要改用命令行，也不要自行切到前台；如果要操作它，请先征得用户同意，再把该应用策略设为“只能前台”或切到前台模式。`);
     }
   }
+  // Tell the renderer which window this action is on, and its on-screen rectangle, so a pointer can be drawn in physical space.
+  async function windowInfo(): Promise<{ x: number; y: number; width: number; height: number } | undefined> {
+    const open = window;
+    if (!open) return undefined;
+    bindWindow(open.hwnd);
+    let rect: { x: number; y: number; width: number; height: number } | undefined;
+    try {
+      const r = await call('rect', { hwnd: open.hwnd });
+      const x = Number(r.x), y = Number(r.y), width = Number(r.width), height = Number(r.height);
+      if ([x, y, width, height].every(Number.isFinite)) rect = { x, y, width, height };
+    } catch { /* the rectangle is nice-to-have, not needed to act */ }
+    setWindowInfo({ app: open.app, exe: open.exe, title: open.title, ...(rect ? { windowRect: rect } : {}) });
+    return rect;
+  }
+  // A client-area point (what onWindow returns) on the physical screen: the client origin from `rect` plus the point.
+  function screenPoint(at: { x: number; y: number }, rect?: { x: number; y: number }): PhysicalPoint | undefined {
+    return rect ? { x: rect.x + at.x, y: rect.y + at.y } : undefined;
+  }
+  // The helper turns window-client pixels into screen pixels (ClientToScreen) and hands them back; without them we omit the point.
+  function physical(data: Record<string, unknown>, xk = 'sx', yk = 'sy'): PhysicalPoint | undefined {
+    const x = Number(data[xk]), y = Number(data[yk]);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined;
+  }
+
   const run: Record<string, (input: DesktopInput) => Promise<DesktopResult>> = {
     record: input => watch.record(input),
     stop: () => watch.stop(),
@@ -388,19 +416,36 @@ export function createDesktop(deps: {
     click: async input => {
       const at = onWindow(input.x, input.y);
       await refuseRealInputOnly(current().hwnd, '点击');
-      await call('click', { hwnd: current().hwnd, ...at, right: input.right === true, count: input.double ? 2 : 1, hold: holdMs(input.hold) });
+      await windowInfo();
+      // Do not invent a start point: the renderer samples the real cursor once at spawn and tweens from there.
+      emitPhase('approaching', { space: 'physical' });
+      const data = await call('click', { hwnd: current().hwnd, ...at, right: input.right === true, count: input.double ? 2 : 1, hold: holdMs(input.hold) });
+      const point = physical(data);
+      emitPhase('executing', { space: 'physical', sampleSource: 'client-to-screen', sampleMs: Date.now(), ...(point ? { to: point } : {}) });
       return after(pressed('点击', input.hold), at);
     },
     drag: async input => {
       const from = onWindow(input.x, input.y), to = onWindow(input.x2, input.y2);
       await refuseRealInputOnly(current().hwnd, '拖动');
-      await call('drag', { hwnd: current().hwnd, x: from.x, y: from.y, x2: to.x, y2: to.y, right: input.right === true, hold: holdMs(input.hold) });
+      const rect = await windowInfo();
+      const finish = screenPoint(to, rect);
+      // Only the destination goes out before the button is pressed; the renderer samples the real cursor at spawn, and the
+      // path itself is drawn from live progress lines during the drag (never replayed afterwards).
+      emitPhase('approaching', { space: 'physical', ...(finish ? { to: finish } : {}) });
+      const data = await call('drag', { hwnd: current().hwnd, x: from.x, y: from.y, x2: to.x, y2: to.y, right: input.right === true, hold: holdMs(input.hold) });
+      const a = physical(data, 'sx', 'sy'), b = physical(data, 'sx2', 'sy2');
+      // Never replay the path here: only the two ends are confirmed, the travel was already sent point by point.
+      emitPhase('executing', { space: 'physical', sampleSource: 'client-to-screen', sampleMs: Date.now(), ...(a ? { from: a } : {}), ...(b ? { to: b } : {}) });
       return after(dragged(input.hold), to);
     },
     move: async input => {
       const at = onWindow(input.x, input.y);
       await refuseRealInputOnly(current().hwnd, '移动鼠标');
-      await call('move', { hwnd: current().hwnd, ...at });
+      await windowInfo();
+      emitPhase('approaching', { space: 'physical' });
+      const data = await call('move', { hwnd: current().hwnd, ...at });
+      const point = physical(data);
+      emitPhase('executing', { space: 'physical', sampleSource: 'client-to-screen', sampleMs: Date.now(), ...(point ? { to: point } : {}) });
       return after('已把鼠标移过去，没有点击。', at);
     },
     close: () => closeWindow(),
@@ -423,7 +468,11 @@ export function createDesktop(deps: {
       if (!step) throw new Error('direction 只能是 up、down、left 或 right');
       if (!view) throw new Error('还没看过这个窗口：先 desktop shot');
       const at = input.x === undefined && input.y === undefined ? onWindow(view.width / 2, view.height / 2) : onWindow(input.x, input.y);
-      await call('scroll', { hwnd: current().hwnd, ...at, up: step[0], right: step[1] });
+      await windowInfo();
+      emitPhase('approaching', { space: 'physical' });
+      const data = await call('scroll', { hwnd: current().hwnd, ...at, up: step[0], right: step[1] });
+      const point = physical(data);
+      emitPhase('executing', { space: 'physical', sampleSource: 'client-to-screen', sampleMs: Date.now(), ...(point ? { to: point } : {}) });
       return after('已滚动。');
     },
     zoom: async input => {

@@ -1,9 +1,12 @@
 # 把「电脑操作模式」与「思考浮窗」设置项挂到 DSH 设置界面，
-# 并注册 evolution-computer-use 自带的 MCP 服务器（lib/cli.js serve）。
+# 并注册 evolution-computer-use 自带的 MCP 服务器（lib/cli.js serve），
+# 同时挂载多指针浮层入口（probes/desktop-multi-pointer）：会话里的多鼠标模式默认关闭，
+# 这里只负责 writer/渲染，不改变设置页或 native/MCP 传输。
 #
 # DSH 在 profile 里把 name 当包 specifier 解析，所以都指向本包：
 #   evolution-computer-use-win/plugin -> 本包 exports["./plugin"] = plugin/lib/index.js（设置页后端）
 #   evolution-computer-use-win        -> 本包 exports["."]      = lib/index.js（导出 apply / bridgeConfig）
+#   evolution-computer-use-win/multi-pointer -> 本包 exports["./multi-pointer"] = probes/desktop-multi-pointer/index.mjs
 - insert:
     - id: evolution-desktop-mode
       name: 'evolution-computer-use-win/plugin'
@@ -19,3 +22,9 @@
       name: 'evolution-computer-use-win'
       config:
         desktopMode: background
+    # 多指针浮层（网页 page_* 与桌面共用同一个 writer）。会话模式默认关闭，
+    # 这里只挂载 writer/渲染；profile 若已有同 id 行，按组合顺序后者的整行胜出。
+    - id: evolution-multi-pointer
+      name: 'evolution-computer-use-win/multi-pointer'
+      config:
+        enabled: true

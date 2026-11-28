@@ -7,6 +7,9 @@ import { createDesktop, STOPPED } from '../src/desktop/desktop.ts';
 import { DEFAULT_APPEARANCE, forgetAppearance } from '../src/appearance.ts';
 import { createComputerUse } from '../src/index.ts';
 
+// 真机上的仲裁走跨进程 broker；这些假助手单测只要一个进程内的本地闸门，也不会拉起任何子进程。
+process.env.EVOLUTION_CU_ARBITER = 'inproc';
+
 type Args = Record<string, unknown>;
 const WECHAT = { hwnd: 67996, owner: 0, pid: 14568, exe: 'Weixin', title: '微信', minimized: false, width: 1750, height: 1400 };
 
@@ -108,7 +111,7 @@ test('the plugin tells the agent of a stop that cut off no step, and lets it go 
   let events: ((name: string) => void) | undefined, halts = 0;
   const computer = createComputerUse({ dataDir, browser: browser as never, platform: 'win32', inbox: false, name: '鲸鲸', onHalt: () => { halts++; },
     desktopDriver: listen => { events = listen; return { call: h.call, running: () => false, stop() {} }; } });
-  computer.setDesktop(true);
+  await computer.setDesktop(true);
   const act = (input: object) => computer.call('desktop', input);
   await act({ action: 'open', app: '微信' });
   events!('stop');
@@ -120,5 +123,5 @@ test('the plugin tells the agent of a stop that cut off no step, and lets it go 
   assert.match((await act({ action: 'shot' })).text, /截图/);
   events!('something else');
   assert.equal(halts, 1);
-  computer.stop();
+  await computer.stop();
 });

@@ -16,7 +16,7 @@ const REASON = { type: 'string' as const, description: '为什么做这一步，
 
 const POLICY_NOTE = '按应用设置的前后台策略优先于当前模式：策略要前台的程序会先申请管理员权限，用户拒绝时这一步失败；策略要后台的程序只把输入投给它的窗口。';
 
-const DESKTOP_NOTE = `操作用户的电脑（后台模式）：看当前窗口的截图，按图上的像素操作；输入直接投给那个窗口，不动用户的鼠标、不抢焦点，用户用着电脑也能用。学会的操作先用 computer_use 找。以管理员权限运行的程序（很多游戏）后台够不着，要用就请用户切到前台模式。action 取一种：open（app 写程序名，打开它当作当前窗口，托盘里的会点开；path 写 exe 启动它；file 写文档用默认程序打开；url 写网址，用 agent 自己的后台浏览器（CDP，独立窗口）打开并截它的窗口，不碰用户已开的 Edge/Chrome、不抢焦点；不写就列出开着的窗口）｜shot（再截一张）｜click（x、y 是截图上的像素；double 双击，right 右键，hold 按住几秒是长按）｜drag（从 x、y 按住拖到 x2、y2 松开；hold 先按住几秒再拖，right 用右键）｜type（text；给 x、y 就先点那里；submit 再回车）｜press（key：${DESKTOP_KEYS}；hold 按住几秒）｜scroll（direction 为 up/down/left/right，可加 x、y）｜zoom（截图上 x、y 到 x2、y2 放大看）｜record（看视频这类会动的：先让它播起来，录 seconds 秒，最多 600；every 每几秒一帧，默认 1；pause 为 false 时录完不暂停）｜stop（停下正在录的）｜review（看录好的：不带参数看全片，from、to 细看一段，at 看某一秒）。每步之后都有新截图，自己看做对了没有；没反应就换个办法，别重复同一下。如果这个程序不处理后台模拟输入（例如 Java/AWT 程序只认真实鼠标键盘），不要改用命令行，也不要自行切到前台；先停下来征得用户同意，再让对方把该应用策略设为“只能前台”。每一步都可以给 reason（为什么做这一步），它会写进用户能看的审计。`;
+const DESKTOP_NOTE = `操作用户的电脑（后台模式）：看当前窗口的截图，按图上的像素操作；输入直接投给那个窗口，不动用户的鼠标、不抢焦点，用户用着电脑也能用。学会的操作先用 computer_use 找。以管理员权限运行的程序（很多游戏）后台够不着，要用就请用户切到前台模式。action 取一种：open（app 写程序名，打开它当作当前窗口，托盘里的会点开；path 写 exe 启动它；file 写文档用默认程序打开；url 写网址，用 agent 自己的后台浏览器（CDP，独立窗口）打开并截它的窗口，不碰用户已开的 Edge/Chrome、不抢焦点；不写就列出开着的窗口）｜shot（再截一张）｜click（x、y 是截图上的像素；double 双击，right 右键，hold 按住几秒是长按）｜drag（从 x、y 按住拖到 x2、y2 松开；hold 先按住几秒再拖，right 用右键）｜move（x、y 只移动鼠标不点击）｜type（text；给 x、y 就先点那里；submit 再回车）｜press（key：${DESKTOP_KEYS}；hold 按住几秒）｜scroll（direction 为 up/down/left/right，可加 x、y）｜zoom（截图上 x、y 到 x2、y2 放大看）｜record（看视频这类会动的：先让它播起来，录 seconds 秒，最多 600；every 每几秒一帧，默认 1；pause 为 false 时录完不暂停）｜stop（停下正在录的）｜review（看录好的：不带参数看全片，from、to 细看一段，at 看某一秒）。每步之后都有新截图，自己看做对了没有；没反应就换个办法，别重复同一下。如果这个程序不处理后台模拟输入（例如 Java/AWT 程序只认真实鼠标键盘），不要改用命令行，也不要自行切到前台；先停下来征得用户同意，再让对方把该应用策略设为“只能前台”。每一步都可以给 reason（为什么做这一步），它会写进用户能看的审计。`;
 /** Foreground mode: the same actions over the whole screen with the real mouse and keyboard. */
 const SCREEN_NOTE = `操作用户的电脑（前台模式）：用户把电脑交给了你。看整个屏幕的截图，用真的鼠标键盘按图上的像素操作，游戏和管理员程序也能用；用户的鼠标会跟着动。用户连按两下 Esc 或点屏幕顶上的「停下」就停。action 和后台模式一样：open（把程序放到最前面，没开的会启动；path 写 exe 启动它；file 写文档用默认程序打开；url 写网址交给浏览器打开；不写 app 就列出窗口）｜close（关闭当前窗口）｜move（x、y 只移动鼠标不点击）｜shot｜click（x、y，double、right，hold 长按几秒）｜drag（x、y 拖到 x2、y2；hold 先按住几秒，right）｜type（text，可先给 x、y，submit）｜press（key：${DESKTOP_KEYS}；hold 按住几秒，比如游戏里按住 w 走路）｜scroll（direction，可加 x、y）｜zoom（x、y 到 x2、y2）｜record（seconds、every、pause）｜stop｜review（from、to 或 at）。走通的步骤可以 procedure_save 存成 where:"screen" 的操作，以后在前台模式下用 procedure_run 回放。每一步都可以给 reason（为什么做这一步），它会写进用户能看的审计。`;
 
@@ -130,7 +130,7 @@ export function computerTools(deps: ToolsDeps): ToolSpec[] {
       context.signal.throwIfAborted();
       const routed = deps.pick ? await deps.pick(input) : undefined;
       const wholeScreen = routed ? routed.screen : deps.screen !== undefined;
-      return pictured(await (routed?.live ?? live).act(input), wholeScreen ? '这是用户电脑整个屏幕的截图。' : '这是用户电脑上当前窗口的截图。');
+      return pictured(await (routed?.live ?? live).act(input, context.signal), wholeScreen ? '这是用户电脑整个屏幕的截图。' : '这是用户电脑上当前窗口的截图。');
     } }),
   ];
   const inbox = deps.inbox;
@@ -193,7 +193,7 @@ export function computerTools(deps: ToolsDeps): ToolSpec[] {
     if (procedure.where === 'screen' && !live) throw new Error(`${path} 是在整个屏幕上做的操作（前台模式），要请用户把桌面控制切到前台模式`);
     let outcome, last: DesktopResult['image'];
     // On the desktop every step answers with a picture; the last one is what the run is checked by.
-    const hands = live && { act: async (step: DesktopInput) => { const result = await live.act(step); last = result.image ?? last; return result; } };
+    const hands = live && { act: async (step: DesktopInput) => { const result = await live.act(step, signal); last = result.image ?? last; return result; } };
     try {
       outcome = procedure.where !== undefined
         ? await runVersions(procedure, kept, input, hands!, signal)

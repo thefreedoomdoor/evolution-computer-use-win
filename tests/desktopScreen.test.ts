@@ -8,6 +8,9 @@ import { DEFAULT_APPEARANCE, forgetAppearance } from '../src/appearance.ts';
 import { STOPPED } from '../src/desktop/turns.ts';
 import { createComputerUse } from '../src/index.ts';
 
+// 真机上的仲裁走跨进程 broker；这些假助手单测只要一个进程内的本地闸门，也不会拉起任何子进程。
+process.env.EVOLUTION_CU_ARBITER = 'inproc';
+
 type Args = Record<string, unknown>;
 const GAME = { hwnd: 656506, owner: 0, pid: 28624, exe: 'StarRail', title: '崩坏：星穹铁道', minimized: false, width: 2560, height: 1600 };
 
@@ -102,7 +105,7 @@ test('the plugin turns foreground mode on only once the administrator helper is 
     foregroundDriver: () => ({ call: h.hands.call, running: () => true, stop: () => { stoppedForeground++; }, start: async () => { if (refuse) throw new Error(refuse); } }) });
   const description = () => computer.tools().find(tool => tool.name === 'desktop')?.description ?? '';
   assert.equal(await computer.setForeground(true), '先打开桌面控制');
-  computer.setDesktop(true);
+  await computer.setDesktop(true);
   const background = computer.tools();
   assert.match(description(), /^操作用户的电脑（后台模式）/);
   assert.equal(await computer.setForeground(true), '前台模式没有打开：用户没有同意管理员权限');
@@ -121,7 +124,7 @@ test('the plugin turns foreground mode on only once the administrator helper is 
   await computer.setForeground(false);
   assert.deepEqual([computer.foregroundOn(), stoppedForeground], [false, 3], 'off ends the administrator helper');
   await computer.setForeground(true);
-  computer.setDesktop(false);
+  await computer.setDesktop(false);
   assert.deepEqual([computer.foregroundOn(), stoppedForeground], [false, 4], 'turning desktop control off ends foreground mode too');
-  computer.stop();
+  await computer.stop();
 });

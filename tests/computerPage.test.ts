@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { formatRead } from '../src/browser/page.ts';
 
+// These pages are driven without a tool call, so their input now goes through the input arbiter. In a test the gate lives
+// in this process; without this the fallback arbiter would try to reach the cross-process broker and spawn one.
+process.env.EVOLUTION_CU_ARBITER = 'inproc';
+
 const controls = Array.from({ length: 45 }, (_, index) => ({ ref: index + 1, role: index % 2 ? 'button' : 'link', name: `控件${index + 1}`, view: index < 40, value: '' }));
 
 test('a read is one numbered line per control, paged, with the visible text cut to budget', () => {

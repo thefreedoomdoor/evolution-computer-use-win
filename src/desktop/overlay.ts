@@ -22,7 +22,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { auditDir, appearanceFile, readAppearance } from '../appearance.ts';
+import { auditDir, appearanceFile, companionLiveFile, readAppearance } from '../appearance.ts';
 import { helperStrings } from './overlay-strings.ts';
 import { fileURLToPath } from 'node:url';
 
@@ -59,6 +59,13 @@ type Activity = {
   };
 };
 
+/** companion-live.json（插件多鼠标 runtime 原子写）本层只关心这三处。 */
+type CompanionLive = {
+  enabled?: boolean;
+  task?: string;
+  banner?: { text?: string };
+};
+
 /**
  * appearance.json 里有没有写 thought 段：写了就完全以它为准；老版本的插件只写
  * activity.json，那时才用它的 position/width/height/opacity/locked 回退。
@@ -83,11 +90,11 @@ const argb = (color: string): string => {
   return '';
 };
 
-const readJson = (file: string): Activity | undefined => {
+const readJson = <T = Activity>(file: string): T | undefined => {
   try {
     const raw = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
     if (!raw.trim()) return undefined;
-    return JSON.parse(raw) as Activity;
+    return JSON.parse(raw) as T;
   } catch {
     return undefined;
   }
@@ -297,6 +304,10 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
     const appearance = readAppearance();
     const thought = appearance.thought;
     const audit = appearance.audit;
+    // 多鼠标 Companion 桥：同目录的 companion-live.json 由 plugin/lib/multi-mouse-runtime.mjs 原子写，
+    // 这里只把路径与开关透传给 C# CompanionFrame（它按路径读取、只画子 Agent 行）。
+    const companionFile = companionLiveFile();
+    const companion = readJson<CompanionLive>(companionFile);
     const legacy = appearanceHasThought() ? undefined : activity;
     const payload = {
       enabled: activity.active !== false,
@@ -342,6 +353,11 @@ export function startThoughtOverlay(options: ThoughtOverlayOptions = {}) {
         auditOverlayTitleSize: audit.fonts.title.size,
         auditOverlayBodySize: audit.fonts.body.size,
         auditOverlayData: join(auditDir(), 'audit-live.tsv'),
+        // 多鼠标任务模式：主思考窗保留，左侧改为每个子 Agent 一行的 Companion 堆叠。
+        companionOverlayData: companionFile,
+        companionOverlayEnabled: !!(companion && companion.enabled === true),
+        companionOverlayTask: companion && typeof companion.task === 'string' ? companion.task : '',
+        companionOverlayBannerText: companion && companion.banner && typeof companion.banner.text === 'string' ? companion.banner.text : '',
       },
       progress: {
         status: activity.progress?.status ?? 'waiting',

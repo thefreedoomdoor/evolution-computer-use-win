@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createComputerUse } from './computer.ts';
 import type { DesktopMode } from './desktop/mode.ts';
@@ -68,6 +69,50 @@ function parse(argv: string[]): { command: string; options: Options } {
 
 const log = (text: string) => { process.stderr.write(`[evolution-computer-use-win] ${text}\n`); };
 const version = () => (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
+
+/**
+ * The one way this process ends: stop the mode poll and the overlay, wait until the computer has really finished the
+ * step in flight, then exit — the host asked the process to end, so it must not leave a button held down. The first
+ * caller starts the work; every later caller (a second signal, or the server closing meanwhile) gets the same promise,
+ * so it runs once and no caller can exit ahead of it. Each cleanup step is guarded on its own: one that throws is
+ * reported and makes the exit non-zero, but it never skips the steps after it. The stop is always awaited before the
+ * exit, and a failed or incomplete cleanup must never be presented as a clean one.
+ */
+export function createShutdown(hooks: {
+  clearTimer?: () => void;
+  stopOverlay?: () => void;
+  stopComputer: () => void | Promise<void>;
+  exit: (code: number) => void;
+}): (code?: number) => Promise<void> {
+  let once: Promise<void> | undefined;
+  return (code = 0) => (once ??= (async () => {
+    // Guarded per step: a timer or overlay that is already gone is logged and remembered as an incomplete cleanup, but
+    // the hooks after it still run and the stop is still awaited — nothing may keep us from putting back a held button.
+    let status = code;
+    const guarded = (what: string, run: () => void) => {
+      try { run(); } catch (error) { log(`停止时出错（${what}）：${errorText(error)}`); if (status === 0) status = 1; }
+    };
+    guarded('模式轮询', () => hooks.clearTimer?.());
+    guarded('浮窗', () => hooks.stopOverlay?.());
+    try {
+      await hooks.stopComputer();
+    } catch (error) {
+      log(`停止时出错：${errorText(error)}`);
+      if (status === 0) status = 1;
+    }
+    hooks.exit(status);
+  })());
+}
+
+/** True only when Node was asked to run this file, so a test can import `createShutdown` without starting the server. */
+function isEntryPoint(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  const canonical = (path: string) => { try { return realpathSync.native(path); } catch { return resolve(path); } };
+  const here = canonical(fileURLToPath(import.meta.url));
+  const there = canonical(invoked);
+  return process.platform === 'win32' ? here.toLowerCase() === there.toLowerCase() : here === there;
+}
 
 function open(options: Options, hooks: { onToolsChanged?(): void; onHalt?(): void } = {}) {
   mkdirSync(options.data, { recursive: true });
@@ -136,10 +181,19 @@ async function serve(options: Options): Promise<void> {
     ? startThoughtOverlay({ activityFile: join(options.data, 'activity.json'), log })
     : undefined;
 
-  const end = () => { clearInterval(modeTimer); overlay?.stop(); computer.stop(); process.exit(0); };
-  process.once('SIGINT', end); process.once('SIGTERM', end);
+  // Every way out — a signal, or the client closing the pipe — goes through this one promise: the mode poll and the
+  // overlay stop, the computer finishes the step in flight, and only then does the process exit. `on` (not `once`) so a
+  // second Ctrl-C cannot fall through to Node's default kill and cut a stop short — it just waits on the same promise.
+  const end = createShutdown({
+    clearTimer: () => clearInterval(modeTimer),
+    stopOverlay: () => overlay?.stop(),
+    stopComputer: () => computer.stop(),
+    exit: code => process.exit(code),
+  });
+  process.on('SIGINT', () => { void end(); });
+  process.on('SIGTERM', () => { void end(); });
   await server.closed;
-  end();
+  await end();
 }
 
 async function main(): Promise<void> {
@@ -153,7 +207,7 @@ async function main(): Promise<void> {
       if (options.json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
       else process.stdout.write(readFileSync(report.reportMarkdown ?? report.reportJson!, 'utf8'));
       if (!report.ok) code = 1;
-    } finally { computer.stop(); }
+    } finally { await computer.stop(); }
     // 桌面控制会起一个助手进程，stop 之后事件循环里还留着句柄；init 是一次性命令，直接退出。
     process.exit(code);
   }
@@ -172,7 +226,7 @@ async function main(): Promise<void> {
     if (!categories.length) lines.push('还没有学会的操作。');
     if (faults.length) lines.push('有问题的：', ...faults.map(line => `- ${line}`));
     process.stdout.write(`${lines.join('\n')}\n`);
-  } finally { computer.stop(); }
+  } finally { await computer.stop(); }
 }
 
-main().catch(error => { log(errorText(error)); process.exit(1); });
+if (isEntryPoint()) main().catch(error => { log(errorText(error)); process.exit(1); });

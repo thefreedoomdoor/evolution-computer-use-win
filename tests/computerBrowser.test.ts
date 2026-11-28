@@ -59,7 +59,9 @@ test('stop() cancels hanging work: its signal aborts and the main connection is 
   let signal!: AbortSignal;
   const hung = browser.run((_page, given) => { signal = given; return new Promise<never>(() => {}); });
   await tick();
-  browser.stop();
+  // Waited for: with the step still hanging, the stop only comes back once the step has been told to stop and the
+  // connection it was using has been closed.
+  await browser.stop();
   await assert.rejects(hung, /已停止/);
   assert.equal(signal.aborted, true);
   assert.equal(cdps[0]!.closed, true);

@@ -26,15 +26,56 @@ public static class Desk {
   /** Set by the PowerShell side for one input: where the drawn DSH cursor goes, and which window it follows. */
   public static long CursorHwnd;
   public static Action<int,int> CursorSink;
+  /** Called with each on-screen point a drag passes through, so the renderer draws the path as it happens (never replayed later). */
+  public static Action<int,int> ProgressSink;
+  /** Set for one input by the host: when the user stops, it writes this file; the helper then releases and backs out. */
+  public static string CancelFile;
+  public static bool WasCancelled;
+  /** Set when the user stops from the overlay, so a long press/drag in flight lets go at once (the host-facing cancel file covers a different path). */
+  public static volatile bool Aborting;
+  /**
+   * Whether this input reached the point(s) below, and the physical screen pixels it reached. Whether a point exists is
+   * its own flag, never a coordinate value: a monitor left of the primary one gives ClientToScreen a negative X, and -1
+   * there is a real place, not "no point".
+   */
+  public static bool HasAct, HasAct2;
+  public static int ActX, ActY, ActX2, ActY2;
+  static bool Stopped() {
+    if (WasCancelled || Aborting) return true;
+    try { if (!string.IsNullOrEmpty(CancelFile) && System.IO.File.Exists(CancelFile)) { WasCancelled = true; return true; } } catch { }
+    return false;
+  }
+  /** Sleeps in short slices so a stop is answered quickly; true when it was stopped. */
+  static bool Rest(int ms) { for (int left = ms; left > 0; left -= 20) { if (Stopped()) return true; Thread.Sleep(Math.Min(20, left)); } return Stopped(); }
+  public static void ResetAct(string cancelFile) { CancelFile = cancelFile; WasCancelled = false; Aborting = false; HasAct = false; HasAct2 = false; ActX = ActY = ActX2 = ActY2 = 0; }
+  public static System.Collections.Generic.Dictionary<string,object> ActReply() {
+    var d = new System.Collections.Generic.Dictionary<string,object>();
+    d["cancelled"] = WasCancelled || Aborting;
+    if (HasAct) { d["sx"] = ActX; d["sy"] = ActY; }
+    if (HasAct2) { d["sx2"] = ActX2; d["sy2"] = ActY2; }
+    return d;
+  }
+  /** The window's client area on the physical screen: top-left in screen pixels and size in client pixels. */
+  public static int[] RectOf(long hwnd) {
+    var top = Live(hwnd); var r = new RECT(); GetClientRect(top, out r);
+    var p = new POINT { X = 0, Y = 0 }; ClientToScreen(top, ref p);
+    return new int[] { p.X, p.Y, r.R - r.L, r.B - r.T };
+  }
   [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
   [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
   [StructLayout(LayoutKind.Sequential)] struct GUITHREADINFO { public int cbSize, flags; public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret; public RECT rcCaret; }
   delegate bool EnumProc(IntPtr h, IntPtr l);
   [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr c);
   [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr c);
+  // Asked, not assumed: whether this thread really measures in physical pixels is read back, never inferred from the
+  // fact that Aware() was called (it ignores its own return value).
+  [DllImport("user32.dll")] static extern IntPtr GetThreadDpiAwarenessContext();
+  [DllImport("user32.dll")] static extern int GetAwarenessFromDpiAwarenessContext(IntPtr value);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
   [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  // Every descendant, not only direct children: Chromium nests its renderer surfaces.
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr l);
   [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
   [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
@@ -43,6 +84,12 @@ public static class Desk {
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attribute, out int value, int size);
   [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+  // Windows 10 1607 and later; on an older system the entry point is missing, which DpiOf reports as unknown.
+  [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr h);
+  // The same DWM attribute with a rectangle payload (DWMWA_EXTENDED_FRAME_BOUNDS = 9): the frame a person sees.
+  [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] static extern int DwmGetWindowAttributeRect(IntPtr h, int attribute, out RECT value, int size);
+  // GA_ROOT = 2: the top-level window a child belongs to, so a candidate's owner is walked, not assumed.
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
   [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   // The wide version: through PostMessageA a Chinese WM_CHAR is read as ANSI bytes and arrives garbled.
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
@@ -108,6 +155,167 @@ public static class Desk {
     var h = new IntPtr(hwnd);
     if (!IsWindow(h)) throw new Exception("window " + hwnd + " is gone");
     return h;
+  }
+
+  /**
+   * Native geometry, read-only: nothing below activates, focuses, moves, or sends anything, and no rectangle is ever
+   * converted between units. Every rectangle is a physical-screen pixel rectangle (the space the input ops report back
+   * in) only while this thread is per-monitor DPI aware, which Content() reads back and states; otherwise Windows may
+   * virtualize them and the reply says so. A caller that holds device-independent pixels must convert itself, and must
+   * not divide by dpi here.
+   */
+  static Dictionary<string,object> Box(RECT r) {
+    var d = new Dictionary<string,object>();
+    d["x"] = r.L; d["y"] = r.T; d["width"] = r.R - r.L; d["height"] = r.B - r.T;
+    return d;
+  }
+  /** The outer frame GetWindowRect reports, including the invisible resize border. Null when Windows will not measure. */
+  static Dictionary<string,object> FrameBox(IntPtr h) {
+    var r = new RECT();
+    if (!GetWindowRect(h, out r)) return null;
+    return Box(r);
+  }
+  /** The frame a person sees (DWM extended frame bounds). Null where DWM has no answer, never the outer frame faked. */
+  static Dictionary<string,object> SeenBox(IntPtr h) {
+    var r = new RECT();
+    if (DwmGetWindowAttributeRect(h, 9, out r, Marshal.SizeOf(typeof(RECT))) != 0) return null;
+    return Box(r);
+  }
+  /** A window's client area on the physical screen, through the same RectOf the input path reports. Null if gone. */
+  static Dictionary<string,object> ClientBox(IntPtr h) {
+    if (!IsWindow(h)) return null;
+    var q = RectOf(h.ToInt64());
+    var d = new Dictionary<string,object>();
+    d["x"] = q[0]; d["y"] = q[1]; d["width"] = q[2]; d["height"] = q[3];
+    return d;
+  }
+  static string TextOf(IntPtr h) { var t = new StringBuilder(512); GetWindowText(h, t, 512); return t.ToString(); }
+  static bool Cloaked(IntPtr h) { int c; return DwmGetWindowAttribute(h, 14, out c, 4) == 0 && c != 0; }
+  /**
+   * How this thread's coordinates are measured right now, as DPI_AWARENESS: 0 unaware, 1 system aware, 2 per-monitor
+   * aware, -1 invalid, null when the entry points are missing. Only 2 means a rectangle is a real pixel on a scaled
+   * display; 0 and 1 mean Windows may hand back a virtualized rectangle, so a caller may not label it physical.
+   */
+  static object AwarenessNow() {
+    try { return GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()); }
+    catch (EntryPointNotFoundException) { return null; }
+    catch (DllNotFoundException) { return null; }
+  }
+  /** Screen DPI, for the audit trail only. Null where Windows cannot say (before 10 1607), never an assumed 96. */
+  static object DpiOf(IntPtr h) {
+    try { uint d = GetDpiForWindow(h); if (d == 0) return null; return (int)d; }
+    catch (EntryPointNotFoundException) { return null; }
+    catch (DllNotFoundException) { return null; }
+  }
+
+  /** This thread's current awareness context, or Zero where Windows cannot say (before 10 1607). */
+  static IntPtr SavedContext() {
+    try { return GetThreadDpiAwarenessContext(); }
+    catch (EntryPointNotFoundException) { return IntPtr.Zero; }
+    catch (DllNotFoundException) { return IntPtr.Zero; }
+  }
+  /** Put the thread back where it was: a read-only query must not leave a caller's thread measuring differently. */
+  static void RestoreContext(IntPtr before) {
+    if (before == IntPtr.Zero) return;
+    try { SetThreadDpiAwarenessContext(before); }
+    catch (EntryPointNotFoundException) { }
+    catch (DllNotFoundException) { }
+  }
+
+  /**
+   * Native geometry for one window (hwnd, reduced to its top-level owner) or for every window of one process (pid).
+   * Read-only, and deliberately unfiltered: cloaked, untitled and tool windows are all reported with the flags that tell
+   * them apart, because deciding which one a caller means is not this side's call. Both a pid and an hwnd may be given,
+   * and then the pid must be the owner's real pid: an ignored argument would silently answer about another window.
+   */
+  public static Dictionary<string,object> Content(long pid, long hwnd) {
+    if (pid < 0) throw new Exception("content: pid must not be negative (" + pid + ")");
+    if (hwnd < 0) throw new Exception("content: hwnd must not be negative (" + hwnd + ")");
+    // The per-monitor context is what makes a rectangle a real pixel, and it is scoped to this query: the previous
+    // thread context is put back before returning or throwing, so a read-only query never leaves the thread measuring
+    // differently than the caller left it. (Aware() also sets the process context, which Windows only honours once.)
+    var before = SavedContext();
+    Aware();
+    try { return MeasureContent(pid, hwnd); }
+    finally { RestoreContext(before); }
+  }
+
+  /** The measurement itself, always made under the context Content() established for this query. */
+  static Dictionary<string,object> MeasureContent(long pid, long hwnd) {
+    // Aware() ignores what Windows answers, so the unit claim below is read back instead of assumed: 2 is
+    // DPI_AWARENESS_PER_MONITOR_AWARE (real pixels on a scaled display). Anything else means Windows may virtualize the
+    // rectangles, and then the reply says so instead of labelling them physical.
+    var awareness = AwarenessNow();
+    var roots = new List<IntPtr>();
+    var seen = new HashSet<long>();
+    if (hwnd != 0) {
+      var h = new IntPtr(hwnd);
+      if (!IsWindow(h)) throw new Exception("window " + hwnd + " is gone");
+      var root = GetAncestor(h, 2);
+      if (root == IntPtr.Zero) root = h;
+      uint owner;
+      GetWindowThreadProcessId(root, out owner);
+      if (pid != 0 && (long)owner != pid) throw new Exception("window " + hwnd + " belongs to pid " + owner + ", not the requested pid " + pid);
+      roots.Add(root);
+      seen.Add(root.ToInt64());
+    } else {
+      if (pid <= 0) throw new Exception("content needs a positive pid or hwnd");
+      // A pid that names no process is an error; a process with no top-level window is an empty answer, not an error.
+      try { Process.GetProcessById((int)pid); }
+      catch (ArgumentException) { throw new Exception("no process has pid " + pid); }
+      EnumWindows((h, l) => {
+        uint owner;
+        GetWindowThreadProcessId(h, out owner);
+        if ((long)owner == pid && seen.Add(h.ToInt64())) roots.Add(h);
+        return true;
+      }, IntPtr.Zero);
+    }
+    var windows = new List<Dictionary<string,object>>();
+    var renderer = new List<Dictionary<string,object>>();
+    var cut = false;
+    foreach (var h in roots) {
+      uint owner;
+      GetWindowThreadProcessId(h, out owner);
+      var w = new Dictionary<string,object>();
+      w["hwnd"] = h.ToInt64();
+      w["pid"] = owner;
+      w["className"] = ClassName(h.ToInt64());
+      w["title"] = TextOf(h);
+      w["visible"] = IsWindowVisible(h);
+      w["minimized"] = IsIconic(h);
+      w["cloaked"] = Cloaked(h);
+      w["dpi"] = DpiOf(h);
+      w["windowRect"] = FrameBox(h);
+      w["frameRect"] = SeenBox(h);
+      w["clientRect"] = ClientBox(h);
+      windows.Add(w);
+      // Every descendant, deepest included: a browser's renderer surface is nested, not a direct child of the frame.
+      var before = renderer.Count;
+      var top = h.ToInt64();
+      EnumChildWindows(h, (c, l) => {
+        if (renderer.Count - before >= 256) { cut = true; return false; }
+        uint child;
+        GetWindowThreadProcessId(c, out child);
+        var r = new Dictionary<string,object>();
+        r["hwnd"] = c.ToInt64();
+        r["parent"] = top;
+        r["className"] = ClassName(c.ToInt64());
+        r["pid"] = child;
+        r["visible"] = IsWindowVisible(c);
+        r["clientRect"] = ClientBox(c);
+        renderer.Add(r);
+        return true;
+      }, IntPtr.Zero);
+    }
+    var reply = new Dictionary<string,object>();
+    // Null units: the rectangles below are still measured, but they are not proven to be physical pixels, so a caller
+    // that converts or compares them must treat the answer as unusable rather than guess a scale.
+    reply["units"] = Equals(awareness, 2) ? "physical-screen-pixels" : null;
+    reply["dpiAwareness"] = awareness;
+    reply["windows"] = windows;
+    reply["renderer"] = renderer;
+    reply["rendererTruncated"] = cut;
+    return reply;
   }
 
   /**
@@ -234,10 +442,12 @@ public static class Desk {
   static IntPtr Pack(int low, int high) { return new IntPtr(((high & 0xFFFF) << 16) | (low & 0xFFFF)); }
 
   public static void Click(long hwnd, int x, int y, bool right, int count, int hold) {
+    if (Stopped()) return;
     Aware();
     var top = Live(hwnd);
     var screen = new POINT { X = x, Y = y };
     ClientToScreen(top, ref screen);
+    ActX = screen.X; ActY = screen.Y; HasAct = true;
     if (CursorSink != null) CursorSink(screen.X, screen.Y);
     var point = new POINT { X = x, Y = y };
     var target = Under(top, ref point);
@@ -245,24 +455,26 @@ public static class Desk {
     uint down = right ? 0x204u : 0x201u, up = right ? 0x205u : 0x202u, twice = right ? 0x206u : 0x203u;
     var button = new IntPtr(right ? 2 : 1);
     PostMessage(target, 0x200, IntPtr.Zero, at);
-    // A long press is one press, held: the button stays down until the time is up.
-    if (hold > 0) { PostMessage(target, down, button, at); Thread.Sleep(hold); PostMessage(target, up, IntPtr.Zero, at); return; }
-    for (int i = 0; i < count; i++) { PostMessage(target, i == 1 ? twice : down, button, at); PostMessage(target, up, IntPtr.Zero, at); }
+    // A long press is one press, held: the button stays down until the time is up (or the user stops).
+    if (hold > 0) { PostMessage(target, down, button, at); Rest(hold); PostMessage(target, up, IntPtr.Zero, at); return; }
+    for (int i = 0; i < count; i++) { if (Stopped()) break; PostMessage(target, i == 1 ? twice : down, button, at); PostMessage(target, up, IntPtr.Zero, at); }
     // The target handles the messages a moment later; give it that moment before the next step reads the window.
-    Thread.Sleep(40);
+    Rest(40);
   }
 
   /** Moves the pointer with no button pressed: a program sees the pointer over it, and nothing is clicked. */
   public static void Move(long hwnd, int x, int y) {
+    if (Stopped()) return;
     Aware();
     var top = Live(hwnd);
     var screen = new POINT { X = x, Y = y };
     ClientToScreen(top, ref screen);
+    ActX = screen.X; ActY = screen.Y; HasAct = true;
     if (CursorSink != null) CursorSink(screen.X, screen.Y);
     var point = new POINT { X = x, Y = y };
     var target = Under(top, ref point);
     PostMessage(target, 0x200, IntPtr.Zero, Pack(point.X, point.Y));
-    Thread.Sleep(30);
+    Rest(30);
   }
 
   /** Asks the window to close the way its own X button does, so the program can still ask about unsaved work. */
@@ -277,8 +489,13 @@ public static class Desk {
   /**
    * Presses at one point, holds there as long as asked (a long press that starts the drag), moves to the other and lets
    * go; the button stays down throughout, as each move says. Both ends are in the window's own pixels.
+   *
+   * A stop in the middle lets go where the pointer really is: the last move it posted, or the start if it never moved.
+   * Letting go at the far end would hand the window a point the drag never reached. Whether the window then treats that
+   * as a drop there, and where, is the window's own doing and is not claimed here.
    */
   public static void Drag(long hwnd, int x, int y, int x2, int y2, bool right, int hold) {
+    if (Stopped()) return;
     Aware();
     var top = Live(hwnd);
     var point = new POINT { X = x, Y = y };
@@ -287,26 +504,36 @@ public static class Desk {
     ClientToScreen(top, ref screen);
     if (CursorSink != null) CursorSink(screen.X, screen.Y);
     int dx = x2 - x, dy = y2 - y;
+    ActX = screen.X; ActY = screen.Y; HasAct = true;
+    ActX2 = screen.X; ActY2 = screen.Y; HasAct2 = true;
     uint down = right ? 0x204u : 0x201u, up = right ? 0x205u : 0x202u;
     var button = new IntPtr(right ? 2 : 1);
+    // Where the button is right now, in the window's pixels: the start until a move is posted. The release and the
+    // reported far end both name this point, so a drag cut short never claims the end it did not reach.
+    int atX = point.X, atY = point.Y;
     PostMessage(target, 0x200, IntPtr.Zero, Pack(point.X, point.Y));
     PostMessage(target, down, button, Pack(point.X, point.Y));
-    Thread.Sleep(hold > 0 ? hold : 80);
-    for (int i = 1; i <= DragSteps; i++) {
-      PostMessage(target, 0x200, button, Pack(point.X + dx * i / DragSteps, point.Y + dy * i / DragSteps));
-      if (CursorSink != null) CursorSink(screen.X + dx * i / DragSteps, screen.Y + dy * i / DragSteps);
-      Thread.Sleep(20);
+    bool cut = Rest(hold > 0 ? hold : 80);
+    for (int i = 1; i <= DragSteps && !cut; i++) {
+      atX = point.X + dx * i / DragSteps; atY = point.Y + dy * i / DragSteps;
+      PostMessage(target, 0x200, button, Pack(atX, atY));
+      ActX2 = screen.X + dx * i / DragSteps; ActY2 = screen.Y + dy * i / DragSteps;
+      if (CursorSink != null) CursorSink(ActX2, ActY2);
+      if (ProgressSink != null) ProgressSink(ActX2, ActY2);
+      cut = Rest(20);
     }
-    PostMessage(target, up, IntPtr.Zero, Pack(point.X + dx, point.Y + dy));
+    PostMessage(target, up, IntPtr.Zero, Pack(atX, atY));
   }
 
   public static void Scroll(long hwnd, int x, int y, int notchesUp, int notchesRight) {
+    if (Stopped()) return;
     Aware();
     var top = Live(hwnd);
     var point = new POINT { X = x, Y = y };
     var target = Under(top, ref point);
     var screen = new POINT { X = x, Y = y };
     ClientToScreen(top, ref screen);
+    ActX = screen.X; ActY = screen.Y; HasAct = true;
     if (CursorSink != null) CursorSink(screen.X, screen.Y);
     var at = Pack(screen.X, screen.Y);
     if (notchesUp != 0) PostMessage(target, 0x20A, Pack(0, notchesUp * 120), at);
@@ -325,11 +552,12 @@ public static class Desk {
   public static void Type(long hwnd, string text) { Type(hwnd, text, 45); }
   /** delay > 0 streams the characters one at a time; 0 posts them all at once. */
   public static void Type(long hwnd, string text, int delay) {
+    if (Stopped()) return;
     uint thread;
     var to = Focused(Live(hwnd), out thread);
-    foreach (char c in text) { PostMessage(to, 0x102, new IntPtr(c), new IntPtr(1)); if (delay > 0) Thread.Sleep(delay); }
+    foreach (char c in text) { if (Stopped()) break; PostMessage(to, 0x102, new IntPtr(c), new IntPtr(1)); if (delay > 0) Rest(delay); }
     // Characters are posted, not typed; let the control take them before a click reads its text.
-    Thread.Sleep(60);
+    Rest(60);
   }
 
   static int Left(int modifier) { return modifier == 0x11 ? 0xA2 : modifier == 0x10 ? 0xA0 : 0xA4; }
@@ -346,6 +574,7 @@ public static class Desk {
    * combination that window's input state is shared for a moment and the modifiers set in it, then put back.
    */
   public static void Key(long hwnd, int vk, int[] modifiers, int hold) {
+    if (Stopped()) return;
     uint thread;
     var to = Focused(Live(hwnd), out thread);
     uint me = GetCurrentThreadId();
@@ -363,7 +592,7 @@ public static class Desk {
       }
       foreach (var m in modifiers) PostMessage(to, m == 0x12 ? 0x104u : 0x100u, new IntPtr(m), KeyBits(m, false));
       PostMessage(to, down, new IntPtr(vk), KeyBits(vk, false));
-      if (hold > 0) Thread.Sleep(hold);
+      if (hold > 0) Rest(hold);
       PostMessage(to, up, new IntPtr(vk), KeyBits(vk, true));
       for (int i = modifiers.Length - 1; i >= 0; i--) PostMessage(to, modifiers[i] == 0x12 ? 0x105u : 0x101u, new IntPtr(modifiers[i]), KeyBits(modifiers[i], true));
       // The program reads the state when it takes the messages, which is a moment later.
@@ -409,42 +638,51 @@ public static class Desk {
   static void KeyEvent(ushort vk, ushort scan, uint flags) { var input = new INPUT { type = 1 }; input.u.key = new KEYBDINPUT { vk = vk, scan = scan, flags = flags }; Send(input); }
   /** Moves the user's pointer there and clicks: x, y are screen pixels. */
   public static void RealClick(int x, int y, bool right, int count, int hold) {
+    if (Stopped()) return;
     Aware();
+    ActX = x; ActY = y; HasAct = true;
     MouseAt(x, y); Thread.Sleep(60);
-    if (hold > 0) { MouseButton(right ? 0x0008u : 0x0002u); Thread.Sleep(hold); MouseButton(right ? 0x0010u : 0x0004u); return; }
-    for (int i = 0; i < Math.Max(1, count); i++) { MouseButton(right ? 0x0008u : 0x0002u); Thread.Sleep(40); MouseButton(right ? 0x0010u : 0x0004u); Thread.Sleep(60); }
+    if (hold > 0) { MouseButton(right ? 0x0008u : 0x0002u); Rest(hold); MouseButton(right ? 0x0010u : 0x0004u); return; }
+    for (int i = 0; i < Math.Max(1, count); i++) { if (Stopped()) break; MouseButton(right ? 0x0008u : 0x0002u); Rest(40); MouseButton(right ? 0x0010u : 0x0004u); Rest(60); }
   }
   /** The same drag with the user's real pointer; both ends are screen pixels. */
   public static void RealDrag(int x, int y, int x2, int y2, bool right, int hold) {
+    if (Stopped()) return;
     Aware();
+    ActX = x; ActY = y; HasAct = true; ActX2 = x2; ActY2 = y2; HasAct2 = true;
     MouseAt(x, y); Thread.Sleep(60);
     MouseButton(right ? 0x0008u : 0x0002u);
-    Thread.Sleep(hold > 0 ? hold : 80);
-    for (int i = 1; i <= DragSteps; i++) { MouseAt(x + (x2 - x) * i / DragSteps, y + (y2 - y) * i / DragSteps); Thread.Sleep(20); }
-    Thread.Sleep(40);
+    bool cut = Rest(hold > 0 ? hold : 80);
+    for (int i = 1; i <= DragSteps && !cut; i++) { MouseAt(x + (x2 - x) * i / DragSteps, y + (y2 - y) * i / DragSteps); if (ProgressSink != null) ProgressSink(x + (x2 - x) * i / DragSteps, y + (y2 - y) * i / DragSteps); cut = Rest(20); }
+    Rest(40);
     MouseButton(right ? 0x0010u : 0x0004u);
   }
   /** Types as characters, not keys, so any language goes in as written; a line break is the Enter key. */
-  public static void RealMove(int x, int y) { Aware(); MouseAt(x, y); Thread.Sleep(30); }
+  public static void RealMove(int x, int y) { if (Stopped()) return; Aware(); ActX = x; ActY = y; HasAct = true; MouseAt(x, y); Rest(30); }
   public static void RealClose() { RealKey(0x73, new int[] { 0x12 }, 60); Thread.Sleep(120); }
   public static void RealType(string text) { RealType(text, 8); }
   public static void RealType(string text, int delay) {
+    if (Stopped()) return;
     foreach (var ch in text) {
+      if (Stopped()) break;
       if (ch == '\r') continue;
       if (ch == '\n') { RealKey(0x0D, new int[0], 0); continue; }
-      KeyEvent(0, ch, 0x0004); KeyEvent(0, ch, 0x0004 | 0x0002); if (delay > 0) Thread.Sleep(delay);
+      KeyEvent(0, ch, 0x0004); KeyEvent(0, ch, 0x0004 | 0x0002); if (delay > 0) Rest(delay);
     }
   }
   /** A key with its scan code too: games read the keyboard by scan code. */
   public static void RealKey(int vk, int[] modifiers, int hold) {
+    if (Stopped()) return;
     foreach (var m in modifiers) KeyEvent((ushort)m, (ushort)MapVirtualKey((uint)m, 0), 0);
-    KeyEvent((ushort)vk, (ushort)MapVirtualKey((uint)vk, 0), 0); Thread.Sleep(hold > 0 ? hold : 60);
+    KeyEvent((ushort)vk, (ushort)MapVirtualKey((uint)vk, 0), 0); Rest(hold > 0 ? hold : 60);
     KeyEvent((ushort)vk, (ushort)MapVirtualKey((uint)vk, 0), 0x0002);
     for (int i = modifiers.Length - 1; i >= 0; i--) KeyEvent((ushort)modifiers[i], (ushort)MapVirtualKey((uint)modifiers[i], 0), 0x0002);
   }
   public static void RealScroll(int x, int y, int up, int right) {
+    if (Stopped()) return;
     Aware();
-    MouseAt(x, y); Thread.Sleep(60);
+    ActX = x; ActY = y; HasAct = true;
+    MouseAt(x, y); Rest(60);
     if (up != 0) { var input = new INPUT { type = 0 }; input.u.mouse = new MOUSEINPUT { data = (uint)(up * 120), flags = 0x0800 }; Send(input); }
     if (right != 0) { var input = new INPUT { type = 0 }; input.u.mouse = new MOUSEINPUT { data = (uint)(right * 120), flags = 0x1000 }; Send(input); }
   }
@@ -492,6 +730,123 @@ public static class Desk {
     if (icon == null) return "missing";
     Invoke(icon);
     return "opened";
+  }
+}
+
+/**
+ * Which browser process really runs on a given profile directory, decided from the process's own command line.
+ * Read-only and side-effect free: nothing here starts, stops, activates or types into a browser. The profile path is the
+ * one this side launched the browser with (--user-data-dir), so a switch value is compared to it exactly after path
+ * normalization, never by substring: C:\a\b2 must not match C:\a\b.
+ */
+public static class Profile {
+  const string DataDir = "--user-data-dir";
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CommandLineToArgvW(string line, out int count);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr mem);
+
+  /** The arguments Windows itself splits a command line into, or null when it cannot split it. */
+  public static string[] Args(string line) {
+    if (string.IsNullOrEmpty(line)) return null;
+    int n = 0;
+    IntPtr p = CommandLineToArgvW(line, out n);
+    if (p == IntPtr.Zero || n <= 0) return null;
+    try {
+      var argv = new string[n];
+      for (int i = 0; i < n; i++) {
+        IntPtr at = Marshal.ReadIntPtr(p, i * IntPtr.Size);
+        argv[i] = at == IntPtr.Zero ? null : Marshal.PtrToStringUni(at);
+      }
+      return argv;
+    } finally { LocalFree(p); }
+  }
+
+  /**
+   * True only for a drive-absolute (C:\...) or UNC (\\server\share\...) path. C:foo, \foo, relative\x, %ENV%\x
+   * and the \\?\ and \\.\ device namespaces are not ones: completing any of them from the current directory would
+   * invent a match.
+   */
+  public static bool Qualified(string raw) {
+    if (string.IsNullOrEmpty(raw)) return false;
+    if (raw.IndexOf('\0') >= 0 || raw.IndexOf('%') >= 0) return false;
+    if (raw.Length >= 3 && char.IsLetter(raw[0]) && raw[1] == ':' && (raw[2] == '\\' || raw[2] == '/')) return true;
+    if (raw.Length >= 2 && (raw[0] == '\\' || raw[0] == '/') && (raw[1] == '\\' || raw[1] == '/')) {
+      var rest = raw.Substring(2).Split(new char[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+      if (rest.Length < 2) return false;
+      if (rest[0] == "?" || rest[0] == ".") return false;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * The path a switch value names, normalized for comparison: separators unified, '.' and '..' resolved, trailing
+   * separator dropped (a root keeps it). Null when the value is not a fully-qualified path at all.
+   */
+  public static string Path(string raw) {
+    if (!Qualified(raw)) return null;
+    string full;
+    try { full = System.IO.Path.GetFullPath(raw); }
+    catch (ArgumentException) { return null; }
+    catch (NotSupportedException) { return null; }
+    catch (System.IO.PathTooLongException) { return null; }
+    while (full.Length > 3 && full.EndsWith("\\")) full = full.Substring(0, full.Length - 1);
+    return full;
+  }
+
+  static bool Browser(string name) {
+    return string.Equals(name, "msedge.exe", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "chrome.exe", StringComparison.OrdinalIgnoreCase);
+  }
+
+  /**
+   * One candidate's verdict: verdict is match, mismatch or unknown, and reason is a stable code. Nothing in the reply
+   * repeats a command line or another profile's path. A form this side cannot read with certainty (a bare switch, a
+   * single-dash one, two different values) is unknown, never a guessed match or a guessed non-match.
+   */
+  public static Dictionary<string,object> Verdict(long pid, string name, string exe, string commandLine, string expected) {
+    var d = new Dictionary<string,object>();
+    d["pid"] = pid;
+    string verdict = "unknown", reason;
+    string want = Path(expected);
+    if (pid <= 0) { reason = "pid-invalid"; }
+    else if (!Browser(name)) { reason = "not-a-browser-process"; }
+    else if (!string.IsNullOrEmpty(exe) && !Browser(System.IO.Path.GetFileName(exe))) { reason = "exe-mismatch"; }
+    else if (want == null) { reason = "expected-not-absolute"; }
+    else {
+      string[] argv = Args(commandLine);
+      if (argv == null) { reason = "command-line-unreadable"; }
+      else {
+        var values = new List<string>();
+        bool bare = false, single = false;
+        for (int i = 0; i < argv.Length; i++) {
+          string t = argv[i];
+          if (t == null) continue;
+          if (t.StartsWith(DataDir + "=", StringComparison.OrdinalIgnoreCase)) values.Add(t.Substring(DataDir.Length + 1));
+          else if (string.Equals(t, DataDir, StringComparison.OrdinalIgnoreCase)) bare = true;
+          // Exactly one leading dash: --user-data-dirX is neither form this side claims to know.
+          else if (t.Length > 1 && t[0] == '-' && t[1] != '-' && t.StartsWith(DataDir.Substring(1), StringComparison.OrdinalIgnoreCase)) single = true;
+        }
+        string key = null;
+        bool conflict = false, empty = false, notAbsolute = false;
+        for (int i = 0; i < values.Count; i++) {
+          if (string.IsNullOrWhiteSpace(values[i])) { empty = true; continue; }
+          string p = Path(values[i]);
+          if (p == null) { notAbsolute = true; continue; }
+          if (key == null) key = p;
+          else if (!string.Equals(key, p, StringComparison.OrdinalIgnoreCase)) conflict = true;
+        }
+        if (conflict) { reason = "switch-conflict"; }
+        else if (bare) { reason = "switch-without-value"; }
+        else if (single) { reason = "switch-single-dash"; }
+        else if (values.Count == 0) { verdict = "mismatch"; reason = "switch-absent"; }
+        else if (empty) { reason = "value-empty"; }
+        else if (notAbsolute) { reason = "value-not-absolute"; }
+        else if (string.Equals(key, want, StringComparison.OrdinalIgnoreCase)) { verdict = "match"; reason = "value-equal"; }
+        else { verdict = "mismatch"; reason = "value-differs"; }
+      }
+    }
+    d["verdict"] = verdict;
+    d["reason"] = reason;
+    return d;
   }
 }
 '@
@@ -983,7 +1338,7 @@ public static class Sign {
     return h;
   }
 
-  static void Emit(string line) { var o = Out; if (o == null) return; lock (o) { o.WriteLine(line); o.Flush(); } }
+  public static void Emit(string line) { var o = Out; if (o == null) return; lock (o) { o.WriteLine(line); o.Flush(); } }
 
   static GraphicsPath Round(RectangleF r, float radius) {
     var path = new GraphicsPath(); float d = Math.Min(radius * 2, Math.Min(r.Width, r.Height));
@@ -1089,6 +1444,7 @@ public static class Sign {
   static void Halt() {
     if (!active) return;
     active = false;
+    Desk.Aborting = true;
     Follow(); DrawCapsule();
     fade.Stop(); fade.Start();
     Emit("{\"event\":\"stop\"}");
@@ -1166,6 +1522,8 @@ public static class Sign {
 }
 '@
     [Sign]::Out = $writer
+    # A drag streams the points it passes through, for both the background and the real-pointer helper.
+    [Desk]::ProgressSink = [Action[int,int]]{ param($x, $y) [Sign]::Emit('{"event":"progress","sx":' + [int]$x + ',"sy":' + [int]$y + '}') }
     $script:signLoaded = $true
   }
   if ($a.show) {
@@ -1256,9 +1614,95 @@ function UseCursor([long]$hwnd) {
   if (-not $script:signLoaded) { Sign @{ show = $false } | Out-Null }
   [Desk]::CursorHwnd = $hwnd
   [Desk]::CursorSink = [Action[int,int]]{ param($x, $y) [Sign]::Cursor([Desk]::CursorHwnd, [int]$x, [int]$y) }
+  [Desk]::ProgressSink = [Action[int,int]]{ param($x, $y) [Sign]::Emit('{"event":"progress","sx":' + [int]$x + ',"sy":' + [int]$y + '}') }
+}
+
+# Read-only: which of these browser process ids really run on the profile directory this side launched with. Nothing is
+# started, stopped, activated or typed into, and no command line is ever echoed back: each candidate gets a verdict, and a
+# candidate this side cannot read with certainty is unknown rather than a guessed match or a guessed non-match.
+function BrowserProfile($expected, $pids) {
+  $want = [string]$expected
+  if ([string]::IsNullOrWhiteSpace($want)) { throw 'browserProfile: give the profile directory the browser was launched with' }
+  if (-not [Profile]::Qualified($want)) { throw 'browserProfile: expected must be a fully-qualified path (C:\... or \\server\share\...); a drive-relative, rooted-without-drive, relative, %ENV% or device-namespace path is refused rather than completed from the current directory' }
+  $list = [System.Collections.Generic.List[long]]::new()
+  foreach ($p in @($pids)) {
+    [long]$n = 0
+    if (-not [long]::TryParse([string]$p, [ref]$n)) { throw 'browserProfile: every pid must be an integer' }
+    if ($n -le 0) { throw 'browserProfile: every pid must be positive' }
+    if (-not $list.Contains($n)) { $list.Add($n) }
+  }
+  if ($list.Count -eq 0) { throw 'browserProfile: give at least one browser pid from the same SystemInfo.getProcessInfo' }
+  if ($list.Count -gt 8) { throw 'browserProfile: at most 8 browser pids per query, got ' + $list.Count }
+
+  # Only the pids asked about are read: this must not walk every browser's command line on the machine.
+  $rows = @()
+  $queryFailed = $false
+  try {
+    $filter = (($list | ForEach-Object { 'ProcessId = ' + $_ }) -join ' or ')
+    $rows = @(Get-CimInstance Win32_Process -Filter $filter -ErrorAction Stop)
+  } catch { $queryFailed = $true; $rows = @() }
+
+  $matched = [System.Collections.Generic.List[long]]::new()
+  $unmatched = [System.Collections.Generic.List[long]]::new()
+  $unknown = [System.Collections.Generic.List[object]]::new()
+  $evidence = [System.Collections.Generic.List[string]]::new()
+  $seen = @{}
+  $unexpected = $false
+  foreach ($row in $rows) {
+    [long]$id = [long]$row.ProcessId
+    if (-not $list.Contains($id)) { $unexpected = $true; continue }
+    $seen[$id] = $true
+    $v = [Profile]::Verdict($id, [string]$row.Name, [string]$row.ExecutablePath, [string]$row.CommandLine, $want)
+    $verdict = [string]$v['verdict']
+    $why = [string]$v['reason']
+    if ($verdict -eq 'match') {
+      $matched.Add($id)
+      $evidence.Add('pid ' + $id + ': its own command line names this profile (' + $why + ')')
+    } elseif ($verdict -eq 'mismatch') {
+      $unmatched.Add($id)
+      $evidence.Add('pid ' + $id + ': its own command line does not name this profile (' + $why + ')')
+    } else {
+      $unknown.Add(@{ pid = $id; reason = $why })
+      $evidence.Add('pid ' + $id + ': cannot be decided (' + $why + ')')
+    }
+  }
+  # A pid the list did not return is unknown, never "it is not mine": a list that could not be read and a pid that no
+  # longer exists look the same from here, and only one of them is a fact about the browser.
+  if ($queryFailed) { $evidence.Add('the process list could not be read, so no pid could be decided') }
+  foreach ($id in $list) {
+    if (-not $seen.ContainsKey($id)) {
+      $unknownWhy = 'no-such-process'
+      if ($queryFailed) { $unknownWhy = 'process-list-unreadable' }
+      $unknown.Add(@{ pid = $id; reason = $unknownWhy })
+      if (-not $queryFailed) { $evidence.Add('pid ' + $id + ': no such process') }
+    }
+  }
+
+  $complete = (-not $queryFailed) -and (-not $unexpected) -and $unknown.Count -eq 0 -and $seen.Count -gt 0
+  $status = 'unknown'
+  if ($matched.Count -gt 0) { $status = 'matched' } elseif ($complete) { $status = 'mismatch' }
+  $why = $null
+  if ($queryFailed) { $why = 'process-list-unreadable' }
+  elseif ($unexpected) { $why = 'process-list-unexpected' }
+  elseif ($seen.Count -eq 0) { $why = 'no-candidates' }
+  elseif ($unknown.Count -gt 0) { $why = 'candidate-unreadable' }
+
+  return @{
+    status = $status
+    complete = $complete
+    incompleteReason = $why
+    expected = [Profile]::Path($want)
+    candidates = $seen.Count
+    matched = $matched
+    unmatched = $unmatched
+    unknown = $unknown
+    evidence = $evidence
+  }
 }
 
 function Run($op, $a) {
+  # One input at a time: remember where a stop would be signalled and forget the last action's coordinates.
+  [Desk]::ResetAct([string]$(if ($a) { $a.cancelFile } else { '' }))
   switch ($op) {
     'windows' { return @{ windows = @([Desk]::Windows()); foreground = [Desk]::Foreground() } }
     'apps' { return @{ apps = @(Get-StartApps | ForEach-Object { @{ name = $_.Name; appId = $_.AppID } }) } }
@@ -1274,27 +1718,44 @@ function Run($op, $a) {
     # ShellExecute: the browser fetches the page itself; no synthetic keys into Chromium.
     'url' { Start-Process -FilePath ([string]$a.url); return @{} }
     'shot' { return [Desk]::Shot([long]$a.hwnd, [string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int]$a.markX, [int]$a.markY) }
-    'click' { UseCursor([long]$a.hwnd); [Desk]::Click([long]$a.hwnd, [int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
-    'scroll' { UseCursor([long]$a.hwnd); [Desk]::Scroll([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
-    'move' { UseCursor([long]$a.hwnd); [Desk]::Move([long]$a.hwnd, [int]$a.x, [int]$a.y); return @{} }
-    'close' { [Desk]::Close([long]$a.hwnd); return @{} }
+    'click' { UseCursor([long]$a.hwnd); [Desk]::Click([long]$a.hwnd, [int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return [Desk]::ActReply() }
+    'scroll' { UseCursor([long]$a.hwnd); [Desk]::Scroll([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return [Desk]::ActReply() }
+    'move' { UseCursor([long]$a.hwnd); [Desk]::Move([long]$a.hwnd, [int]$a.x, [int]$a.y); return [Desk]::ActReply() }
+    'close' { [Desk]::Close([long]$a.hwnd); return [Desk]::ActReply() }
     'class' { return @{ className = [Desk]::ClassName([long]$a.hwnd) } }
+    'rect' { $q = [Desk]::RectOf([long]$a.hwnd); return @{ x = $q[0]; y = $q[1]; width = $q[2]; height = $q[3] } }
+    # Read-only geometry for a window (hwnd) or a process's windows (pid). Both may be given and must then agree.
+    'content' {
+      [long]$wantPid = 0
+      [long]$wantHwnd = 0
+      if ($null -ne $a.pid) {
+        if (-not [long]::TryParse([string]$a.pid, [ref]$wantPid) -or $wantPid -lt 0) { throw 'content: pid must be a non-negative integer' }
+      }
+      if ($null -ne $a.hwnd) {
+        if (-not [long]::TryParse([string]$a.hwnd, [ref]$wantHwnd) -or $wantHwnd -lt 0) { throw 'content: hwnd must be a non-negative integer' }
+      }
+      if ($wantPid -le 0 -and $wantHwnd -le 0) { throw 'content: give a positive pid, a positive hwnd, or both' }
+      return [Desk]::Content($wantPid, $wantHwnd)
+    }
+    # Read-only: which of the browser pids the caller got from this browser's own SystemInfo really run on the profile
+    # directory it launched with. Not an input: no cancel file, no pointer, no activation.
+    'browserProfile' { return BrowserProfile $a.expected $a.pids }
     'openfile' { Start-Process -FilePath ([string]$a.file); return @{} }
-    'type' { [Desk]::Type([long]$a.hwnd, [string]$a.text, [int]$a.delay); return @{} }
-    'key' { [Desk]::Key([long]$a.hwnd, [int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return @{} }
+    'type' { [Desk]::Type([long]$a.hwnd, [string]$a.text, [int]$a.delay); return [Desk]::ActReply() }
+    'key' { [Desk]::Key([long]$a.hwnd, [int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return [Desk]::ActReply() }
     'restore' { return @{ restored = [Desk]::Restore([long]$a.hwnd) } }
     'refocus' { return @{ refocused = [Desk]::Refocus([long]$a.hwnd) } }
     'tray' { return @{ result = [Desk]::Tray([string]$a.name); cursor = [Desk]::Cursor() } }
     'cursor' { return @{ cursor = [Desk]::Cursor() } }
     'screen' { return [Desk]::Screen([string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int]$a.markX, [int]$a.markY) }
-    'drag' { UseCursor([long]$a.hwnd); [Desk]::Drag([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
-    'rdrag' { [Desk]::RealDrag([int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
-    'rclick' { [Desk]::RealClick([int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
-    'rtype' { [Desk]::RealType([string]$a.text, [int]$a.delay); return @{} }
-    'rkey' { [Desk]::RealKey([int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return @{} }
-    'rscroll' { [Desk]::RealScroll([int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
-    'rmove' { [Desk]::RealMove([int]$a.x, [int]$a.y); return @{} }
-    'rclose' { [Desk]::RealClose(); return @{} }
+    'drag' { UseCursor([long]$a.hwnd); [Desk]::Drag([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return [Desk]::ActReply() }
+    'rdrag' { [Desk]::RealDrag([int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return [Desk]::ActReply() }
+    'rclick' { [Desk]::RealClick([int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return [Desk]::ActReply() }
+    'rtype' { [Desk]::RealType([string]$a.text, [int]$a.delay); return [Desk]::ActReply() }
+    'rkey' { [Desk]::RealKey([int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return [Desk]::ActReply() }
+    'rscroll' { [Desk]::RealScroll([int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return [Desk]::ActReply() }
+    'rmove' { [Desk]::RealMove([int]$a.x, [int]$a.y); return [Desk]::ActReply() }
+    'rclose' { [Desk]::RealClose(); return [Desk]::ActReply() }
     'sign' { return Sign $a }
     'status' { return SignStatus }
     'sheet' { return [Desk]::Sheet([string[]]@($a.files), [string[]]@($a.labels), [string]$a.file, [int]$a.columns, [int]$a.tile) }
@@ -1309,7 +1770,8 @@ while ($null -ne ($line = $reader.ReadLine())) {
   try { $reply = @{ id = $request.id; data = (Run $request.op $request.args) } }
   catch { $reply = @{ id = $request.id; error = $_.Exception.Message } }
   # The sign's own thread writes its events to the same stream, so a line is written whole under one lock.
-  $text = $reply | ConvertTo-Json -Compress -Depth 6
+  # Depth 8: a content reply nests the window list and each window's rectangles below id and data.
+  $text = $reply | ConvertTo-Json -Compress -Depth 8
   [System.Threading.Monitor]::Enter($writer)
   try { $writer.WriteLine($text) } finally { [System.Threading.Monitor]::Exit($writer) }
 }

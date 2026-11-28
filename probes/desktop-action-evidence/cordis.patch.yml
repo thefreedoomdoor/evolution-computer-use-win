@@ -1,0 +1,12 @@
+# Host-only acceptance bundle: records desktop action events (requestId/leaseId) of one root.
+# Off by default - it subscribes to nothing and creates no file until `enabled: true` and an
+# exact `rootId` are set here. The loader resolves `name` as a package specifier from the
+# profile, so it matches package.json. The evidence root is derived from the module location
+# (<package>/artifacts/desktop-action-evidence), never from this config.
+- insert:
+    - id: desktop-action-evidence
+      name: '@local/desktop-action-evidence'
+      config:
+        enabled: false
+        rootId: ''
+        durationMs: 300000

@@ -4,6 +4,9 @@ import test from 'node:test';
 import { writeFileSync } from 'node:fs';
 import { createDesktop } from '../src/desktop/desktop.ts';
 
+// 真机上一个进程只有一个跨进程 broker；这些假助手单测不需要跨进程串行，一个进程内的本地闸门就够，也不会拉起任何子进程。
+process.env.EVOLUTION_CU_ARBITER = 'inproc';
+
 type Args = Record<string, unknown>;
 const WECHAT = { hwnd: 67996, pid: 14568, exe: 'Weixin', title: '微信', minimized: false, width: 1750, height: 1400 };
 const TERMINAL = { hwnd: 500, pid: 9, exe: 'WindowsTerminal', title: 'Windows PowerShell', minimized: false, width: 2000, height: 1100 };

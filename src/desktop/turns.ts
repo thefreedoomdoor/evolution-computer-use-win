@@ -2,6 +2,8 @@ import type { Image } from '../shared/image.ts';
 import { errorText } from '../shared/faults.ts';
 import type { AuditSink } from '../audit.ts';
 import type { Recording } from './recording.ts';
+import type { ActionDescriptor, ActionKind } from '../tool.ts';
+import { CancelledError, runAction } from './arbiter.ts';
 
 /** What one desktop action hands back: short text, and the picture the agent acts on (`caption` when it is not a picture of now). */
 export interface DesktopResult { text: string; image?: Image }
@@ -14,6 +16,16 @@ const SIGN_LINGER_MS = 5000;
 const KEPT_ACTIONS = 20;
 /** The actions that send input, named as the agent is told about them. */
 export const INPUTS: Record<string, string> = { click: '点击', drag: '拖动', type: '输入', press: '按键', scroll: '滚动', move: '移动鼠标', close: '关闭', open: '打开' };
+/** The actions that send real input and therefore hold the machine-wide lease for the whole step (input, settle, screenshot). */
+const LEASED_INPUTS = new Set(['click', 'drag', 'move', 'scroll', 'type', 'press', 'close', 'open']);
+/** The action as the renderer hears it: never geometry (the desktop layer adds the points), just what kind of input it is. */
+function describe(raw: { action: string; right?: boolean; double?: boolean }): ActionDescriptor {
+  const action = String(raw.action);
+  const kind: ActionKind = action === 'click' ? 'click' : action === 'drag' ? 'drag' : action === 'move' ? 'move'
+    : action === 'scroll' ? 'wheel' : action === 'type' ? 'type' : action === 'press' ? 'key' : 'other';
+  const button = action === 'click' || action === 'drag' ? (raw.right === true ? 'right' as const : 'left' as const) : undefined;
+  return { kind, label: action, ...(button ? { button } : {}), ...(action === 'click' && raw.double === true ? { double: true } : {}) };
+}
 
 /**
  * The agent's turns on the user's computer, in either mode: one action at a time, in order; the sign up while the agent acts and
@@ -76,10 +88,11 @@ export function createTurns<I extends { action: string }>(deps: {
   return {
     actions: Object.keys(deps.run),
     /** One action, after the ones before it; what the agent did is kept without what the agent typed. */
-    act(input: I): Promise<DesktopResult> {
+    act(input: I, signal?: AbortSignal): Promise<DesktopResult> {
       const work = deps.run[input.action];
       if (!work) return Promise.reject(new Error(`不认识的 action：${input.action}，可用：${Object.keys(deps.run).join('、')}`));
       const touches = input.action !== 'review';
+      const leased = touches && LEASED_INPUTS.has(input.action);
       const done = queue.then(async () => {
         if (touches && halted) throw new Error(STOPPED);
         const what = INPUTS[input.action];
@@ -93,14 +106,22 @@ export function createTurns<I extends { action: string }>(deps: {
         if (!touches) return traced();
         const before = stops;
         busy++;
-        try {
+        // The whole step — sign, input, settle, screenshot — runs under one machine-wide lease, so another agent's input
+        // cannot land between this agent's click and the picture it acts on next.
+        const step = async (): Promise<DesktopResult> => {
           await deps.sign(true);
           const result = await traced();
-          if (stops !== before) throw new Error(STOPPED);
+          if (stops !== before) throw new CancelledError(STOPPED);
           await deps.sign(true);
           return result;
+        };
+        try {
+          if (leased) return await runAction(describe(input as { action: string; right?: boolean; double?: boolean }), step, { signal, area: 'global' });
+          return await step();
         } catch (error) {
-          throw stops !== before ? new Error(STOPPED) : error;
+          if (stops !== before) throw new Error(STOPPED);
+          if (error instanceof CancelledError) throw new Error(error.message || STOPPED);
+          throw error;
         } finally { busy--; if (!halted) linger(); }
       });
       queue = done.catch(() => {});

@@ -1,11 +1,14 @@
 import { join } from 'node:path';
 import { Faults, errorText } from './shared/faults.ts';
-import { createBrowser, type Browser } from './browser/browser.ts';
+import { createBrowser, type Browser, type GeometryPageInfo } from './browser/browser.ts';
+import { profileBrowserPids, readViewportWitness } from './browser/cdp.ts';
+import { MAX_PROFILE_PIDS, createGeometryResolver, type GeometryResolver as ScreenMapping } from './browser/geometry.ts';
 import { createProcedureLibrary } from './procedures/library.ts';
 import { createJsonlSink, type MessageSink } from './procedures/messages.ts';
 import { createRoutines } from './procedures/routines.ts';
 import { computerTools } from './tools.ts';
-import type { ToolResult, ToolSpec } from './tool.ts';
+import type { ActionSink, ToolResult, ToolSpec, TrustedCallerContext } from './tool.ts';
+import { createArbiter, withCall } from './desktop/arbiter.ts';
 import { createDesktop, windowsNamed, type Desktop } from './desktop/desktop.ts';
 import { createDesktopDriver, type DesktopDriver } from './desktop/driver.ts';
 import { createScreen, type Screen } from './desktop/screen.ts';
@@ -18,7 +21,12 @@ import { loadIndex, resolveApp } from './apps/index.ts';
 import { runInit, hasInitReport, indexMissing, type InitReport } from './init.ts';
 
 /** A helper as the module uses it; only foreground mode's is started ahead of use. */
-type Hands = Pick<DesktopDriver, 'call' | 'running' | 'stop'> & Partial<Pick<DesktopDriver, 'start'>>;
+type Hands = {
+  call(op: string, args?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  running(): boolean;
+  /** May finish asynchronously: a real helper waits for its exit, a test double may just return. */
+  stop(): void | Promise<void>;
+} & Partial<Pick<DesktopDriver, 'start'>>;
 type Inbox = { status(): { waiting: string[] }; stop(): void };
 
 export interface ComputerUseOptions {
@@ -39,6 +47,8 @@ export interface ComputerUseOptions {
   onHalt?(): void;
   /** 审计写不进去时说的话：审计绝不弄坏一次操作，所以它只能记日志（默认不打扰任何人）。 */
   log?(text: string): void;
+  /** Every desktop action as a typed event (queued → … → succeeded), for the renderer; called on the host's event loop. */
+  onAction?: ActionSink;
   // For tests and hosts that bring their own.
   browser?: Browser; platform?: NodeJS.Platform;
   desktopDriver?(events: (name: string) => void): Hands;
@@ -48,6 +58,133 @@ export interface ComputerUseOptions {
 
 /** The mailbox keeps at most this many unread inbox words; older ones give way. */
 const MAILBOX = 20;
+
+/**
+ * How long a shutdown lets the leases it just cancelled finish their own cleanup before it retires the input arbiter
+ * (Arbiter.settled in src/desktop/arbiter.ts). A step that is measured and then cancelled settles in about three
+ * seconds, so four leaves it room. Running out changes nothing about the fence: the shutdown retires anyway, and the
+ * broker orphans whatever lease was still open instead of handing it to another agent.
+ */
+const SETTLE_BUDGET_MS = 4_000;
+
+/**
+ * How the page tools learn where their tab sits on the screen, for one browser that just answered. The browser says
+ * which processes serve it, the desktop helper says which of those were started with this agent's own profile and then
+ * measures the window the render widget is in, and the tab itself has to witness that it is the visible document of
+ * that window (src/browser/cdp.ts). Each layer can say "unknown", and then the step still runs — as real input, audited
+ * without a position — instead of inventing a place on the screen.
+ *
+ * One measurement makes one reading: the port's processes and the helper's verdict about them are asked at most once,
+ * shared by the profile check and by the witness step it leads to, and the next measurement asks again.
+ */
+export function browserGeometry(deps: {
+  /** One operation through the desktop helper; only window geometry and the profile check are read here. */
+  helper: (op: string, args?: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  /** The browser processes serving a port; absent asks the browser itself on that port. */
+  browserPids?: (port: number) => Promise<number[]>;
+}): (info: GeometryPageInfo) => ScreenMapping {
+  const readPids = (port: number) => (deps.browserPids ?? profileBrowserPids)(port);
+  return info => {
+    let reading: Promise<number[]> | undefined;
+    const fresh = () => {
+      reading = proveProfile(deps.helper, info, readPids);
+      return reading;
+    };
+    return createGeometryResolver({
+      helper: deps.helper,
+      profilePids: fresh,
+      witness: (targetId, candidate) => readViewportWitness(
+        info.cdp,
+        { targetId, pid: candidate.pid, layout: candidate.layout },
+        { browserPids: () => reading ?? fresh() },
+      ),
+    });
+  };
+}
+
+/**
+ * This agent's browser processes for one tab's port, proven against the profile it was told to use. The browser names the
+ * processes serving the port; the desktop helper reports which of them were started with that profile. Only the proven
+ * ids go on. Every doubt — no desktop control, a helper that errors or does not know the operation, an answer that does
+ * not add up — leaves the list empty, so the step is audited without a position rather than following a guess. The
+ * profile path is a request, never evidence: it is handed to the helper and nothing read back from a command line is
+ * echoed or treated as proof of anything beyond "this process was started with that profile".
+ */
+async function proveProfile(
+  helper: (op: string, args?: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  info: GeometryPageInfo,
+  readPids: (port: number) => Promise<number[]>,
+): Promise<number[]> {
+  let portPids: unknown;
+  try { portPids = await readPids(info.port); } catch { return []; }
+  // A reading is taken whole or not at all: a value that is not a list, or a list holding one entry that is not a
+  // finite positive whole pid, fails the whole measurement. Dropping the unusable entries would let the helper
+  // certify a set that is not the set the browser named. Repeated ids are folded only after every entry has passed,
+  // and the helper is asked about the deduped set — at most MAX_PROFILE_PIDS of them.
+  if (!Array.isArray(portPids)) return [];
+  const list: number[] = [];
+  for (const one of portPids) {
+    if (typeof one !== 'number' || !Number.isFinite(one) || !Number.isInteger(one) || one <= 0) return [];
+    list.push(one);
+  }
+  const asked = [...new Set(list)];
+  if (asked.length === 0 || asked.length > MAX_PROFILE_PIDS) return [];
+  let answer: unknown;
+  try { answer = await helper('browserProfile', { expected: info.profileDir, pids: asked }); } catch { return []; }
+  return readProfileAnswer(answer, asked, info.profileDir) ?? [];
+}
+
+/**
+ * Reads one `browserProfile` answer strictly enough to trust it as a partition of exactly the ids that were asked about.
+ * The answer counts only when it says every process was readable and every one of them names the requested profile, when
+ * the returned expected path is the same profile that was asked for, when matched and unmatched divide the asked ids into
+ * two disjoint groups with nothing foreign and nothing missing, and when at least one id is matched. Anything else — a
+ * missing field, a category that overlaps, a pid that was never asked about, a count that does not add up — yields null
+ * instead of the largest subset that happens to look right.
+ */
+export function readProfileAnswer(value: unknown, asked: readonly number[], want: string): number[] | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const answer = value as Record<string, unknown>;
+  if (answer.status !== 'matched') return null;
+  if (answer.complete !== true) return null;
+  if (!Array.isArray(answer.unknown) || answer.unknown.length !== 0) return null;
+  // A reason for being incomplete cannot sit beside a claim of completeness; the helper only names one when it is not.
+  if (answer.incompleteReason !== null) return null;
+  if (typeof answer.expected !== 'string' || !sameProfile(answer.expected, want)) return null;
+  const candidates = answer.candidates;
+  if (typeof candidates !== 'number' || !Number.isInteger(candidates) || candidates <= 0) return null;
+  const askedSet = new Set(asked);
+  if (askedSet.size === 0 || askedSet.size > MAX_PROFILE_PIDS) return null;
+  const matched = profilePidList(answer.matched, askedSet);
+  const unmatched = profilePidList(answer.unmatched, askedSet);
+  if (!matched || !unmatched) return null;
+  if (matched.length === 0) return null;
+  if (candidates !== matched.length + unmatched.length) return null;
+  const seen = new Set<number>([...matched, ...unmatched]);
+  if (seen.size !== matched.length + unmatched.length) return null;
+  if (seen.size !== askedSet.size) return null;
+  return matched;
+}
+
+/** One side of the partition: positive integers that were asked about, each at most once. */
+function profilePidList(value: unknown, asked: ReadonlySet<number>): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: number[] = [];
+  for (const item of value) {
+    if (typeof item !== 'number' || !Number.isInteger(item) || item <= 0) return null;
+    if (!asked.has(item) || out.includes(item)) return null;
+    out.push(item);
+  }
+  return out;
+}
+
+/** Whether two spellings name one profile folder: case, slashes and a trailing separator do not make a different one. */
+function sameProfile(answer: string, want: string): boolean {
+  const shape = (path: string) => path.replace(/\//g, '\\').replace(/\\+/g, '\\').replace(/\\+$/, '').toLowerCase();
+  const left = shape(answer);
+  const right = shape(want);
+  return left !== '' && left === right;
+}
 
 /**
  * Self-evolving computer use, for any agent host. The plugin knows no platform: it gives the agent a browser of its
@@ -60,7 +197,24 @@ const MAILBOX = 20;
 export function createComputerUse(options: ComputerUseOptions) {
   const faults = options.faults ?? new Faults();
   const library = createProcedureLibrary(options.proceduresDir ?? join(options.dataDir, 'procedures'), { faults });
-  const browser = options.browser ?? createBrowser({ profileDir: options.profileDir ?? join(options.dataDir, 'browser'), faults });
+  /** One machine-wide arbiter for this agent's desktop input; the renderer hears every action through `onAction`. */
+  const arbiter = createArbiter({ sink: options.onAction });
+  const browser = options.browser ?? createBrowser({
+    profileDir: options.profileDir ?? join(options.dataDir, 'browser'),
+    faults,
+    // This browser's real input belongs to this agent's arbiter: a page made here sends its input through this instance
+    // and this instance is the one poisoned when a stop could not be finished cleanly.
+    arbiter,
+    // A tab's place on screen is measured through the desktop helper; with desktop control off there is none, and the
+    // page tools still work — their actions are simply audited without a position.
+    geometryResolver: browserGeometry({
+      helper: (op, args) => {
+        const hands = desktopUse?.driver;
+        if (!hands) throw new Error('没有打开桌面控制，量不了浏览器窗口在屏幕上的位置。');
+        return hands.call(op, args);
+      },
+    }),
+  });
   const messages = options.messages === false ? undefined : options.messages ?? createJsonlSink(join(options.dataDir, 'messages.jsonl'));
   const routines = createRoutines({ library, browser });
   const companion = () => options.name?.trim() || 'DSH';
@@ -81,27 +235,51 @@ export function createComputerUse(options: ComputerUseOptions) {
   /** 借来的模式属于哪个程序：换到别的程序时它不再管用。 */
   let activeFor: string | undefined;
   let cached: { revision: string; tools: ToolSpec[] } | undefined;
+  // Switches and shutdowns run one after another: turning desktop off and straight back on must not open a second helper
+  // beside one whose exit has not been confirmed. A stop that never confirms keeps the poison and blocks the next start.
+  let switching: Promise<unknown> = Promise.resolve();
+  function serial<T>(work: () => Promise<T>): Promise<T> {
+    const run = switching.then(work, work);
+    switching = run.then(() => undefined, () => undefined);
+    return run;
+  }
 
   const signFault = (text: string | undefined) => { if (text) faults.set('desktop-sign', text); else faults.clear('desktop-sign'); };
   const revision = () => `${desktopUse ? 'desktop' : ''}|${desktopUse?.foreground ? 'foreground' : ''}|${desktopUse?.inbox ? 'inbox' : ''}`;
   function changed(before: string): void { if (revision() !== before) options.onToolsChanged?.(); }
 
-  function stopForeground(): void {
+  async function stopForeground(): Promise<void> {
+    // 先让正在跑的那一步看到取消（helper 写 cancel 标志、补 UP/KEYUP），再等它真正退出。
+    arbiter.cancelCurrent();
     activeMode = undefined; activeFor = undefined;
     const foreground = desktopUse?.foreground;
     if (!foreground) return;
-    foreground.screen.reset(); foreground.driver.stop();
+    foreground.screen.reset();
     delete desktopUse!.foreground;
+    // The helper may still hold a button: stop() raises the cancel flag and waits for its real exit before returning.
+    await foreground.driver.stop();
   }
   // What was recorded goes with the switch, like the window that was open.
-  function stopDesktop(): void {
+  async function stopDesktop(): Promise<void> {
+    arbiter.cancelCurrent();
     userForeground = false; activeMode = undefined; activeFor = undefined;
-    stopForeground(); desktopUse?.inbox?.stop(); desktopUse?.desktop.reset(); desktopUse?.driver.stop(); desktopUse = undefined;
+    const use = desktopUse, foreground = use?.foreground;
+    desktopUse = undefined;
+    use?.inbox?.stop(); use?.desktop.reset();
+    // Clear the foreground helper and the background one together: both may hold a button, so await their real exit.
+    const frontStopped = foreground ? (foreground.screen.reset(), foreground.driver.stop()) : Promise.resolve();
+    await Promise.all([frontStopped, use?.driver.stop()]);
     mailbox.length = 0; mailHinted = false; faults.clear('desktop-sign');
+    // The desktop helper exiting cleanly says nothing about the browser's input: a page action cut off mid-press leaves
+    // the same unknown state, and this one arbiter serves both. So the switch never clears the poison — turning desktop
+    // control off and on again is not evidence that anything recovered, and the next input stays blocked until the owner
+    // explicitly resets this instance. A switch that leaves no poison behind is still as usable as before.
   }
   /** The user pressed stop. A step that was cut off says so itself; otherwise the agent hears it with its next result. */
   function halt(): void {
     if (!desktopUse) return;
+    // A long press/drag lets go at once: the abort raises the helper's cancel flag instead of waiting out its hold.
+    arbiter.cancelCurrent();
     const back = desktopUse.desktop.halt(), front = desktopUse.foreground?.screen.halt();
     options.onHalt?.();
     if (back.cut || front?.cut === true) return;
@@ -158,12 +336,13 @@ export function createComputerUse(options: ComputerUseOptions) {
     return userForeground && desktopUse.foreground ? 'foreground' : 'background';
   }
   /** Desktop control, on or off; the helper itself starts only when the agent first acts. Returns why it could not, or nothing. */
-  function setDesktop(on: boolean): string | undefined {
-    const before = revision();
-    if (!on) { stopDesktop(); faults.clear('desktop'); changed(before); return undefined; }
-    if (desktopUse) return undefined;
-    if (!windows()) { faults.set('desktop', '桌面控制目前只支持 Windows'); return '桌面控制目前只支持 Windows'; }
-    const driver = options.desktopDriver?.(events) ?? createDesktopDriver({ faults, events });
+  async function setDesktop(on: boolean): Promise<string | undefined> {
+    return serial(async () => {
+      const before = revision();
+      if (!on) { await stopDesktop(); faults.clear('desktop'); changed(before); return undefined; }
+      if (desktopUse) return undefined;
+      if (!windows()) { faults.set('desktop', '桌面控制目前只支持 Windows'); return '桌面控制目前只支持 Windows'; }
+      const driver = options.desktopDriver?.(events) ?? createDesktopDriver({ faults, events, arbiter });
     // The agent's own browser (CDP) opens the page behind everything else, so opening a URL never takes the user's focus.
     const desktop = createDesktop({
       driver, companion, signFault, audit: audited,
@@ -175,10 +354,11 @@ export function createComputerUse(options: ComputerUseOptions) {
         return typeof title === 'string' && title ? title : undefined;
       }),
     });
-    desktopUse = { driver, desktop, ...(options.inbox === false ? {} : { inbox: startInbox(options.inbox ?? {}) }) };
-    faults.clear('desktop');
-    changed(before);
-    return undefined;
+      desktopUse = { driver, desktop, ...(options.inbox === false ? {} : { inbox: startInbox(options.inbox ?? {}) }) };
+      faults.clear('desktop');
+      changed(before);
+      return undefined;
+    });
   }
   /**
    * Foreground mode, on top of desktop control: turning it on asks the user, through UAC, to let a helper run as
@@ -189,21 +369,23 @@ export function createComputerUse(options: ComputerUseOptions) {
     const before = revision();
     if (!desktopUse) return '先打开桌面控制';
     if (desktopUse.foreground) return undefined;
-    const driver = options.foregroundDriver?.(events) ?? createDesktopDriver({ faults, events, elevated: true });
+    const driver = options.foregroundDriver?.(events) ?? createDesktopDriver({ faults, events, elevated: true, arbiter });
     try { await driver.start?.(); }
-    catch (error) { driver.stop(); return errorText(error); }
-    if (!desktopUse) { driver.stop(); return '桌面控制已经关掉了'; }
+    catch (error) { await driver.stop(); return errorText(error); }
+    if (!desktopUse) { await driver.stop(); return '桌面控制已经关掉了'; }
     desktopUse.foreground = { driver, screen: createScreen({ hands: driver, eyes: desktopUse.driver, companion, signFault, audit: audited }) };
     changed(before);
     return undefined;
   }
   /** The user's own switch: remembered even when the UAC request is refused, in which case background mode stays on. */
   async function setForeground(on: boolean): Promise<string | undefined> {
-    const before = revision();
-    if (!on) { userForeground = false; stopForeground(); changed(before); return undefined; }
-    const why = await startForeground();
-    userForeground = !why;
-    return why;
+    return serial(async () => {
+      const before = revision();
+      if (!on) { userForeground = false; await stopForeground(); changed(before); return undefined; }
+      const why = await startForeground();
+      userForeground = !why;
+      return why;
+    });
   }
   /**
    * Which mode this step runs in: a per-app policy speaks first, and without one the user's global mode stands.
@@ -235,7 +417,8 @@ export function createComputerUse(options: ComputerUseOptions) {
     // 换到别的程序就是换了个地方：策略说什么就是什么，没有策略就回到全局模式，借来的模式不跟过去。
     if (action === 'open' || !same) {
       // 借来的管理员助手只服务于那个程序，离开就关掉，不让它一直以管理员身份闲着。
-      if (activeMode === 'foreground' && !userForeground && decided !== 'foreground') stopForeground();
+      // 借来的管理员助手必须先确认退出，下一步才可能换程序或再开一个：不等它就换会造成两个 helper 同时注入。
+      if (activeMode === 'foreground' && !userForeground && decided !== 'foreground') await serial(() => stopForeground());
       activeMode = decided;
       activeFor = decided ? who : undefined;
     }
@@ -246,7 +429,7 @@ export function createComputerUse(options: ComputerUseOptions) {
     if (!desktopUse) return undefined;
     const mode = await decideMode(input);
     if (mode === 'foreground' && !desktopUse.foreground) {
-      const why = await startForeground();
+      const why = await serial(() => startForeground());
       if (why) throw new Error(`这个程序按你的设置要用前台模式，但没能启动管理员助手：${why}`);
     }
     if (mode === 'foreground' && desktopUse.foreground) return { live: desktopUse.foreground.screen, screen: true };
@@ -257,8 +440,8 @@ export function createComputerUse(options: ComputerUseOptions) {
    * background mode stays on, so a refusal never leaves the agent without the computer it already had.
    */
   async function setDesktopMode(mode: DesktopMode): Promise<string | undefined> {
-    if (mode === 'off') { setDesktop(false); faults.clear('foreground-mode'); return undefined; }
-    const why = setDesktop(true);
+    if (mode === 'off') { await setDesktop(false); faults.clear('foreground-mode'); return undefined; }
+    const why = await setDesktop(true);
     if (why) return why;
     if (mode === 'background') { faults.clear('foreground-mode'); return await setForeground(false); }
     const refused = await setForeground(true);
@@ -285,14 +468,14 @@ export function createComputerUse(options: ComputerUseOptions) {
   /** 用户主动 init：临时把桌面控制打开（不启动助手），这样桌面自测也有东西可测。 */
   async function init(opts: { full?: boolean; selftest?: boolean; allowNetwork?: boolean } = {}): Promise<InitReport> {
     const was = desktopUse !== undefined;
-    if (!was) setDesktop(true);
+    if (!was) await setDesktop(true);
     try {
       return await runInit({
         dataDir: options.dataDir, browser, ...(desktopUse ? { desktop: desktopUse.desktop } : {}),
         full: opts.full ?? true, selftest: opts.selftest ?? true, allowNetwork: opts.allowNetwork, report: 'init', log: options.log,
       });
     } finally {
-      if (!was) setDesktop(false);
+      if (!was) await setDesktop(false);
     }
   }
   /** DSH 每次启动时跑：总是增量扫描；第一次（还没有 init 报告）补一次完整扫描和自测。 */
@@ -315,16 +498,21 @@ export function createComputerUse(options: ComputerUseOptions) {
     faults, library,
     init,
     autoInit,
+    /** Capability bit: `call` threads the host-supplied trusted caller into every tool, and input arbitration keys identity off it. A gateway must refuse a runtime without it rather than call it un-attributed. */
+    acceptsCaller: true as const,
     /** The tools as they stand now; the list changes only with the user's switches. */
     tools,
     /** Runs one tool by name. A failure rejects with the reason the agent should read. */
-    async call(name: string, args: unknown, signal: AbortSignal = new AbortController().signal): Promise<ToolResult> {
+    async call(name: string, args: unknown, signal: AbortSignal = new AbortController().signal, caller?: TrustedCallerContext): Promise<ToolResult> {
       const tool = tools().find(entry => entry.name === name);
       if (!tool) throw new Error(`没有 ${name} 这个工具${name === 'desktop' ? '：桌面控制没有打开，要请用户打开' : ''}`);
       const asked = (args ?? {}) as Record<string, unknown>;
       let result: ToolResult;
-      try { result = await tool.execute(args as Record<string, unknown>, { signal }); }
-      catch (error) { auditedTool(name, asked, false, errorText(error)); throw new Error(errorText(error) + asides(), { cause: error }); }
+      // The trusted caller (when the host supplies one) and the call's one id scope the whole call, so every phase of an
+      // action carries the same requestId and the agent identity is never taken from tool arguments.
+      try {
+        result = await withCall(caller, signal, () => tool.execute(args as Record<string, unknown>, { signal, ...(caller ? { caller } : {}) }), arbiter);
+      } catch (error) { auditedTool(name, asked, false, errorText(error)); throw new Error(errorText(error) + asides(), { cause: error }); }
       auditedTool(name, asked, true, result.text);
       return { ...result, text: result.text + asides() };
     },
@@ -354,7 +542,38 @@ export function createComputerUse(options: ComputerUseOptions) {
     }),
     /** Brings the agent's browser window forward, for the user to log in or watch. */
     show: () => browser.show(),
-    stop: () => { browser.stop(); stopDesktop(); library.clearFaults(); faults.clear('computer', 'desktop', 'foreground-mode'); },
+    async stop(): Promise<void> {
+      // Before the first await: a stop takes no new input from here on. A step whose outcome was already unknown keeps
+      // the reason it carries — that poison says more than shutting down does. Otherwise the instance is marked as
+      // closing, so work still queued behind this shutdown can no longer be granted and reach the helper while the
+      // browser and its helpers are being put away. Everything unfinished is cancelled right here, synchronously: the
+      // step in flight must not be overtaken by a step that was only waiting for a turn.
+      const closing = '这个实例正在关闭，新的输入没有开始。';
+      if (arbiter.poisonedReason() === undefined) arbiter.poison(closing);
+      arbiter.cancelCurrent();
+      try {
+        // Waited for: a browser gives the step in flight its chance to put the button back and settle on a live
+        // connection, so the arbiter below is disposed only after that input has really finished.
+        await browser.stop();
+        await serial(() => stopDesktop());
+      } finally {
+        // In the finally, so a browser or desktop stop that fails still ends the same way: this instance takes no more
+        // input either way, and leaving the arbiter alive would keep a broker connection that nobody will ever use.
+        // Bounded wait before the arbiter retires. dispose() sets `retired`, which makes a lease that is still unwinding
+        // skip its release: retiring first would leave the broker holding a lease nobody ever hands back, and the next
+        // agent would wait on it. This is observational only — it takes no lease, sends the broker nothing and clears no
+        // poison — so a budget that expires still ends in the same retire-and-fence below, and a wait that fails on its
+        // own (it has no way to fail today) is not allowed to skip that retire: the outcome of the stop stays the outcome
+        // of the stops above.
+        await arbiter.settled(SETTLE_BUDGET_MS).catch(() => false);
+        // Last of all, once this agent's own work has been stopped and its helpers have exited: the arbiter closes its
+        // broker connection for good. It keeps any poison it carries, cancels what it still had queued, and never sends
+        // the broker an abandon — a lease whose state is unknown stays closed instead of being handed to somebody else.
+        arbiter.dispose();
+        library.clearFaults();
+        faults.clear('computer', 'desktop', 'foreground-mode');
+      }
+    },
   };
 }
 /** 审计里的 action：工具名加上这次用的参数；中文说法在 audit.ts 那边生成。 */

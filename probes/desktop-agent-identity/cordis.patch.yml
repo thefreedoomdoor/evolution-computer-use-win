@@ -1,0 +1,7 @@
+# Host-only bundle: inserts the read-only identity probe tool into a DSH profile.
+# The loader resolves `name` as a package specifier from the profile; it matches
+# package.json. No config is needed - the probe accepts no input.
+- insert:
+    - id: desktop-agent-identity-probe
+      name: '@local/desktop-agent-identity-probe'
+      config: {}

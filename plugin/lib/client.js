@@ -1,8 +1,10 @@
 /**
  * DSH 设置页：电脑操作模式 + 操作横幅 / 思考窗 / 审计窗外观 + 字体 + 按应用策略。
  *
- * 注册到 DSH 插件管理的两个插槽：
+ * 注册到 DSH 插件管理的插槽：
  *   plugins.row.config    —— 已安装插件列表里这一行右侧的配置控件（key = 包名#entry id）
+ *                            两条：evolution-desktop-mode（模式与浮窗外壳）、
+ *                            evolution-computer-use（只放网关传输 MCP / native）
  *   plugins.bundle.config —— 插件详情页里的配置区（key = 包名）
  *
  * 后端接口见 lib/index.js / lib/routes.js：
@@ -11,6 +13,7 @@
  *   GET/POST/DELETE /fonts               字体列表、上传、删除
  *   GET  /apps                           运行中的窗口（仿 OBS 窗口捕捉）
  *   GET/POST /policies                   按应用的前后台策略
+ *   GET/POST /transport                  网关传输（toolTransport），经宿主 configEditor 写回 profile
  *
  * 只用 require('react') 的 createElement，不引入构建步骤；样式全部内联，
  * 颜色 / 边框优先取 DSH 主题变量 --dsw-alias-*。
@@ -334,6 +337,233 @@ window.__ModuleLoader__.load({
       );
     }
 
+
+    /**
+     * 网关传输（MCP / native）：只改 profile 里 evolution-computer-use 那一行。
+     * 写入走宿主的 configEditor（后端 /transport）；这里只管展示，并用请求序号/草稿/lastGood 处理迟到的响应。
+     */
+    const GATEWAY_TRANSPORTS = [
+      { value: 'mcp', label: 'MCP', tip: '历史默认：所有调用共用一个电脑操作运行时，MCP 协议不携带 Agent 身份' },
+      { value: 'native', label: 'native', tip: '每个 Agent 独立运行时与浏览器 profile；未知身份一律拒绝' },
+    ];
+
+    /** 特殊传输值：如实展示，但这里不提供切换（也不提供任何 probe 按钮）。 */
+    const TRANSPORT_NOTES = {
+      'native-probe': '这是隔离验收用的探针传输，界面不提供切换',
+    };
+
+    function GatewayTransportControl(props) {
+      const compact = !props || props.view === 'summary';
+      const [state, setState] = react.useState(null); // lastGood：宿主确认过的配置事实
+      const [draft, setDraft] = react.useState(null); // 还没被宿主确认的选择（只在保存期间显示）
+      const [busy, setBusy] = react.useState(false);
+      const [saving, setSaving] = react.useState(false);
+      const [error, setError] = react.useState('');
+      const alive = react.useRef(true);
+      const ticket = react.useRef(0); // 最新一次请求的序号；落后的迟到响应整条丢掉
+      const inflight = react.useRef(0);
+
+      const begin = (isSave) => {
+        ticket.current += 1;
+        inflight.current += 1;
+        setBusy(true);
+        if (isSave) setSaving(true);
+        return ticket.current;
+      };
+
+      const finish = () => {
+        inflight.current = Math.max(0, inflight.current - 1);
+        if (!alive.current) return;
+        if (inflight.current === 0) {
+          setBusy(false);
+          setSaving(false);
+        }
+      };
+
+      // 只有最新序号的响应能改界面：迟到的 GET 不得覆盖刚提交的草稿或新的状态。
+      const newest = (mine) => alive.current && mine === ticket.current;
+
+      // 失败一律丢掉草稿回到 lastGood；响应若带了宿主的新事实（409 冲突等）以它为准，绝不虚报成功。
+      const apply = (data) => {
+        if (data && data.value) setState(data.value);
+        setDraft(null);
+        setError(data && data.ok ? '' : (data && data.message) || '保存失败');
+      };
+
+      const read = () => {
+        const mine = begin(false);
+        fetch(API + '/transport', { cache: 'no-store' })
+          .then((response) => response.json())
+          .then((data) => {
+            if (!newest(mine)) return;
+            if (data && data.value) {
+              setState(data.value);
+              setDraft(null);
+              setError('');
+              return;
+            }
+            setState(null);
+            setError((data && data.message) || '读取网关传输失败');
+          })
+          .catch(() => {
+            if (newest(mine)) setError('读取网关传输失败：本机接口没有响应');
+          })
+          .finally(finish);
+      };
+
+      react.useEffect(() => {
+        alive.current = true;
+        read();
+        return () => {
+          alive.current = false;
+        };
+      }, []);
+
+      // expected 用 lastGood 里的宿主值做乐观并发：别人先改了会拿到 409，那就以宿主当前值为准并提示刷新。
+      const choose = (next) => {
+        if (busy || !state || !state.available || next === state.current) return;
+        setDraft(next);
+        setError('');
+        const mine = begin(true);
+        fetch(API + '/transport', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ next, expected: state.expected }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (!newest(mine)) return;
+            apply(data);
+          })
+          .catch(() => {
+            if (!newest(mine)) return;
+            setDraft(null);
+            setError('保存失败：本机接口没有响应，仍保持原来的选择');
+          })
+          .finally(finish);
+      };
+
+      const current = draft || (state ? state.current : null);
+      const known = GATEWAY_TRANSPORTS.some((item) => item.value === current);
+      const available = !!(state && state.available);
+      const options = state && Array.isArray(state.options) ? state.options : ['mcp', 'native'];
+      const special = state && state.available && !known ? TRANSPORT_NOTES[current] || '不认识的传输值（profile 里手写的），这里只如实显示，不替你改' : null;
+
+      const group = h(
+        'div',
+        {
+          role: 'radiogroup',
+          'aria-label': '网关传输',
+          'aria-busy': busy ? 'true' : 'false',
+          style: {
+            display: 'inline-flex',
+            alignItems: 'stretch',
+            border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.45))',
+            borderRadius: '7px',
+            overflow: 'hidden',
+            verticalAlign: 'middle',
+            opacity: available ? 1 : 0.55,
+          },
+        },
+        GATEWAY_TRANSPORTS.filter((item) => options.indexOf(item.value) >= 0).map((item) => {
+          const active = current === item.value;
+          return h(
+            'button',
+            {
+              key: item.value,
+              type: 'button',
+              role: 'radio',
+              'aria-checked': active ? 'true' : 'false',
+              title: item.tip,
+              disabled: busy || !available || state === null,
+              onClick: (event) => {
+                event.stopPropagation();
+                choose(item.value);
+              },
+              style: {
+                fontSize: compact ? '12px' : '11px',
+                lineHeight: compact ? '22px' : '20px',
+                padding: '0 10px',
+                border: 'none',
+                borderLeft: item.value === GATEWAY_TRANSPORTS[0].value ? 'none' : '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.45))',
+                // 选中态用 brand-primary：当前深色主题里它接近白色，所以文字必须换成 onBrandText（深色），否则白底白字看不见。
+                background: active ? 'var(--dsw-alias-brand-primary, #5b8def)' : 'transparent',
+                color: active ? onBrandText : 'inherit',
+                fontWeight: active ? 600 : 400,
+                cursor: busy || !available ? 'default' : 'pointer',
+              },
+            },
+            item.label
+          );
+        })
+      );
+
+      const status = h(
+        'span',
+        {
+          role: 'status',
+          'aria-live': 'polite',
+          style: {
+            fontSize: '11px',
+            opacity: error ? 1 : 0.75,
+            fontWeight: error ? 600 : 400,
+            color: error ? 'var(--dsw-alias-state-error-primary, inherit)' : undefined,
+          },
+        },
+        saving ? '保存中…' : busy ? '加载中…' : error ? error : ''
+      );
+
+      const retry = error && !busy ? h('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: (event) => { event.stopPropagation(); read(); } }, '重试') : null;
+
+      const reason = state && state.reason ? h('div', { style: hintStyle }, state.reason) : null;
+      const now = state && state.available
+        ? h(
+            'span',
+            { style: miniLabelStyle },
+            '当前：' + state.current + (state.explicit ? '' : '（未写配置，按历史默认）') + (special ? ' — ' + special : '')
+          )
+        : null;
+
+      if (compact) {
+        return h(
+          'div',
+          { style: { display: 'flex', flexDirection: 'column', gap: '4px' }, onClick: (event) => event.stopPropagation() },
+          h(
+            'div',
+            { style: { display: 'inline-flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+            h('span', { style: { fontSize: '12px', opacity: 0.75 } }, '网关传输'),
+            group,
+            now,
+            status,
+            retry
+          ),
+          reason
+        );
+      }
+
+      return h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: '8px' }, onClick: (event) => event.stopPropagation() },
+        h(
+          Card,
+          null,
+          h(CardTitle, null, '网关传输'),
+          h(
+            'div',
+            { style: hintStyle },
+            '决定 agent 的工具走哪条通道：MCP（历史默认，所有调用共用一个运行时，没有 Agent 身份）或 native（每个 Agent 独立运行时与浏览器 profile，未知身份一律拒绝）。' +
+              '切换只改 profile 里 evolution-computer-use 这一行的 toolTransport，其它配置保持不变。'
+          ),
+          h(
+            'div',
+            { style: hintStyle },
+            '切换会让宿主重挂载网关，正在进行的电脑操作会随之中断——请先等它们结束再切。保存成功只表示配置写进了 profile，不代表可信身份的真机验收已经完成。'
+          ),
+          h('div', { style: rowStyle }, group, now, status, retry),
+          reason
+        )
+      );
+    }
 
     // --- 颜色：HSV 调色板 ---------------------------------------------------
 
@@ -1550,6 +1780,7 @@ window.__ModuleLoader__.load({
 
     const TABS = [
       { id: 'mode', label: '模式' },
+      { id: 'multimouse', label: '多鼠标' },
       { id: 'banner', label: '操作横幅' },
       { id: 'thought', label: '思考窗' },
       { id: 'audit', label: '审计窗' },
@@ -1572,6 +1803,178 @@ window.__ModuleLoader__.load({
           })
         )
       );
+    }
+
+
+    // --- 多鼠标任务模式 -----------------------------------------------------
+    // “本任务”开关：只对当前可信活跃 root 生效。拿不到活任务就明确提示“需先选择活任务”，
+    // 绝不偷偷开启所有 root（契约见 docs/design/cyble-multi-mouse-implementation-plan.md）。
+    function MultiMousePanel() {
+      const [state, setState] = react.useState(null);
+      const [error, setError] = react.useState('');
+      const [busy, setBusy] = react.useState(false);
+      const [task, setTask] = react.useState('');
+      const alive = react.useRef(true);
+      // 请求代次：Agent 的原生 multi_mouse 工具不经过这个面板，随时可能改 runtime；
+      // 先发出、后返回的旧 GET/POST 响应不得覆盖更新的状态。
+      const gen = react.useRef(0);
+      const busyRef = react.useRef(0);
+      // 保存期间被跳过的那次刷新，保存收尾后补读一次。
+      const reloadAfterSave = react.useRef(false);
+      // 用户正在输入任务文字时，后台刷新只更新开关/root，不回写他还没提交的草稿。
+      const draftDirty = react.useRef(false);
+
+      const apply = (value) => {
+        setState(value);
+        if (draftDirty.current) return;
+        const nextTask = (value && value.mode && typeof value.mode.task === 'string') ? value.mode.task : '';
+        setTask(nextTask);
+      };
+
+      const load = () => {
+        const mine = ++gen.current;
+        fetchJson(API + '/multi-mouse', { cache: 'no-store' })
+          .then((result) => {
+            if (!alive.current || mine !== gen.current) return;
+            const data = result.data;
+            if (data && data.ok && data.value) { apply(data.value); setError(''); }
+            else setError((data && data.message) || '读取多鼠标状态失败');
+          })
+          .catch((err) => { if (alive.current && mine === gen.current) setError(String(err)); });
+      };
+
+      // 面板上所有“重新读取”都走这一条：页面重新可见、窗口重新聚焦、两个刷新按钮。
+      // 保存还在路上时先不读：这时读到的是保存前的值，会把刚点的勾选/刚改的任务刷回去；
+      // 而且读请求会换代次，把在途保存的响应判成过期丢掉，busy 就永远收不了尾
+      // （控件一直禁用、之后的刷新全被挡在 reloadAfterSave 里）。只记一笔，等保存收尾后补读。
+      const refresh = () => {
+        if (!alive.current) return;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+        if (busyRef.current !== 0) { reloadAfterSave.current = true; return; }
+        load();
+      };
+
+      react.useEffect(() => {
+        alive.current = true;
+        load();
+        // 页面重新可见/窗口重新聚焦时再读一次：Agent 的原生 multi_mouse 工具可能在这期间
+        // 改了开关或任务，不能让面板一直显示过期状态。只在可见时刷新，不做轮询。
+        if (typeof document !== 'undefined' && document.addEventListener) {
+          document.addEventListener('visibilitychange', refresh);
+        }
+        if (typeof window !== 'undefined' && window.addEventListener) {
+          window.addEventListener('focus', refresh);
+        }
+        return () => {
+          alive.current = false;
+          gen.current += 1;
+          if (typeof document !== 'undefined' && document.removeEventListener) {
+            document.removeEventListener('visibilitychange', refresh);
+          }
+          if (typeof window !== 'undefined' && window.removeEventListener) {
+            window.removeEventListener('focus', refresh);
+          }
+        };
+      }, []);
+
+      const save = (patch) => {
+        // 保存也换代次：POST 的响应只在这期间没有更新的读取/保存时才生效。
+        const mine = ++gen.current;
+        busyRef.current = mine;
+        setBusy(true);
+        // 只有这次保存真的带上了任务文字，才让服务端值接管输入框；
+        // 只切换 root / 开关时不要冲掉用户还没提交的草稿。
+        // 标记要等保存成功才清：保存失败时服务端还是旧任务，若此时有补读落地，
+        // 会把用户刚打的字冲掉（他以为保存过了）。失败保留草稿，可直接重试。
+        const commitTask = !!(patch && Object.prototype.hasOwnProperty.call(patch, 'task'));
+        fetchJson(API + '/multi-mouse', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(patch),
+          cache: 'no-store',
+        })
+          .then((result) => {
+            if (!alive.current || mine !== gen.current) return;
+            const data = result.data;
+            if (data && data.ok && data.value) {
+              if (commitTask) draftDirty.current = false;
+              apply(data.value);
+              setError('');
+            } else setError((data && data.message) || '保存多鼠标状态失败');
+          })
+          .catch((err) => { if (alive.current && mine === gen.current) setError(String(err)); })
+          .then(() => {
+            // busy 只由最后一次保存收尾，避免旧响应把忙碌态永久留下。
+            if (busyRef.current !== mine) return;
+            busyRef.current = 0;
+            if (!alive.current) return;
+            setBusy(false);
+            if (reloadAfterSave.current) { reloadAfterSave.current = false; load(); }
+          });
+      };
+
+      const hint = { fontSize: '12px', color: 'var(--dsw-alias-text-secondary, #8a93a3)', margin: '2px 0' };
+      if (!state) return h('div', { style: hint }, busy ? '正在读取多鼠标状态…' : (error || '正在读取多鼠标状态…'));
+
+      if (state.available === false) {
+        return h('div', null,
+          h('div', { style: hint }, '多鼠标 runtime 不可用（宿主插件未加载或已降级）。'),
+          error ? h(ErrorLine, { text: error }) : null);
+      }
+      if (state.needsSelection) {
+        const roots0 = Array.isArray(state.roots) ? state.roots : [];
+        return h('div', null,
+          h('div', { style: hint }, roots0.length > 1
+            ? '检测到多个任务，请选择要让“本任务”指哪个 root（不会自动选最近活动的那个）：'
+            : '需先选择活任务：让 Agent 在这台电脑上操作一次（产生活跃 root）后再回到这里。'),
+          roots0.length > 1 ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', margin: '6px 0' } },
+            roots0.map((r) => h('button', {
+              key: r.rootId, type: 'button', disabled: busy,
+              style: Object.assign({}, buttonStyle, { fontSize: '11px', padding: '2px 6px' }),
+              onClick: () => save({ rootId: r.rootId }),
+            }, (r.label || 'Agent') + ' · ' + String(r.rootId).slice(0, 8) + (r.enabled ? ' · 开' : '')))) : null,
+          h('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: refresh }, '重新读取'),
+          error ? h(ErrorLine, { text: error }) : null);
+      }
+
+      const mode = state.mode || {};
+      const enabled = mode.enabled === true;
+      const roots = Array.isArray(state.roots) ? state.roots : [];
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+          h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' } },
+            h('input', {
+              type: 'checkbox',
+              checked: enabled,
+              disabled: busy,
+              onChange: (event) => save({ enabled: event.target.checked, task: task }),
+            }),
+            '本任务：多鼠标显示（主思考 + 每个子 Agent 最近一条）')),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+          h('span', { style: { fontSize: '12px' } }, '任务提示'),
+          h('input', {
+            type: 'text',
+            value: task,
+            placeholder: '例如：整理桌面文件（不含应用名）',
+            disabled: busy || !enabled,
+            maxLength: 60,
+            onChange: (event) => { draftDirty.current = true; setTask(event.target.value); },
+            onBlur: () => { if (enabled) save({ enabled: true, task: task }); },
+            style: { flex: '1 1 220px', padding: '4px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.28))' },
+          })),
+        roots.length > 1 ? h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
+          h('span', { style: { fontSize: '12px' } }, '本任务对应：'),
+          roots.map((r) => h('button', {
+            key: r.rootId, type: 'button', disabled: busy,
+            style: Object.assign({}, buttonStyle, r.rootId === state.rootId
+              ? { outline: '2px solid var(--dsw-alias-state-success-primary, #4ade80)' } : null,
+              { fontSize: '11px', padding: '2px 6px' }),
+            onClick: () => save({ rootId: r.rootId }),
+          }, (r.label || 'Agent') + ' · ' + String(r.rootId).slice(0, 8) + (r.enabled ? ' · 开' : '')))) : null,
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+          h('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: refresh }, '刷新'),
+          h('span', { style: hint }, 'root：' + String(state.rootId || '').slice(0, 12) + '　epoch：' + String(mode.epoch == null ? '—' : mode.epoch) + '　已知 root 数：' + roots.length)),
+        error ? h(ErrorLine, { text: error }) : null);
     }
 
     function AppearanceSettings(props) {
@@ -1771,6 +2174,8 @@ window.__ModuleLoader__.load({
       let body = null;
       if (tab === 'mode') {
         body = props && props.modeSection ? props.modeSection : null;
+      } else if (tab === 'multimouse') {
+        body = h(MultiMousePanel, null);
       } else if (tab === 'apps') {
         body = h(PerAppPanel, null);
       } else if (!appearance) {
@@ -2139,10 +2544,11 @@ window.__ModuleLoader__.load({
     const inject = ['slots'];
 
     function apply(ctx) {
-      const register = (name, key, order) => {
+      const register = (name, key, order, component) => {
+        const control = component || DesktopModeControl;
         try {
           ctx.slots.inject(name, () =>
-            ctx.slots.register({ name, key, order }, (slotProps) => h(DesktopModeControl, { view: slotProps && slotProps.view }))
+            ctx.slots.register({ name, key, order }, (slotProps) => h(control, { view: slotProps && slotProps.view }))
           );
         } catch (error) {
           console.error('[evolution-desktop-mode] 注册插槽失败：', name, error);
@@ -2150,6 +2556,8 @@ window.__ModuleLoader__.load({
       };
       // 已安装插件列表：这一行右侧的配置控件（key 规则：<包名>#<patch 里的 entry id>）
       register('plugins.row.config', 'evolution-computer-use-win#evolution-desktop-mode', 10);
+      // 网关那一行单独一个控件：只改 toolTransport，不把模式 / 外观设置摊到第二行。
+      register('plugins.row.config', 'evolution-computer-use-win#evolution-computer-use', 20, GatewayTransportControl);
       // 插件详情页的配置区（key = 包名）
       register('plugins.bundle.config', 'evolution-computer-use-win', 10);
     }
@@ -2158,6 +2566,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply;
     exports.inject = inject;
     exports.DesktopModeControl = DesktopModeControl;
+    exports.GatewayTransportControl = GatewayTransportControl;
     exports.AppearanceSettings = AppearanceSettings;
     exports.PerAppPanel = PerAppPanel;
     // 兼容旧导出名：以前只有浮窗设置，现在并入了完整外观设置。
