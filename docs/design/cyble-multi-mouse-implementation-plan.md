@@ -441,3 +441,19 @@ task-63 的 completed 仅表示首版源码交付，不表示第20节证明链�
 - task-156 仅修改[native 回归](<../../tests/nativeTools.test.ts#L1648-L1876>)，覆盖未绑定拒绝、首次并发绑定一次、root 变化、2 子 1 孙身份、工厂晚回、拒绝 runtime、overlay 晚加载与取消/停下；此前一次测试夹具误传 AbortController，已改为 `.signal` 后独立复跑。
 - 独立门禁：[最终 typecheck](<../../artifacts/cyble-validation-20261128/lazy-155-156-final-typecheck.log>) exit 0；[native 专项](<../../artifacts/cyble-validation-20261128/lazy-155-156-rerun-1795864553250.tap#L61-L68>) 60/60 通过；[build](<../../artifacts/cyble-validation-20261128/lazy-155-156-build-1795864657284.log>) exit 0；[全量](<../../artifacts/cyble-validation-20261128/lazy-155-156-full-1795864747203.tap#L843-L850>) 814 项、812 通过、0 失败/取消、2 跳过，49691.5195ms；跳过仍为 Edge/微信 live 项。git diff --check 通过。
 - 以上均为离线/假宿主或既有测试环境证据，不是当前 DSH 真机输入；未清默认 marker、未 reset/杀 broker，当前 profile 的 2 子 1 孙、A7–A16、Q3–Q5 仍待用户手动重开后验收。
+
+## 45. 真实 move 首次触发横幅独立编译阻断（2026-11-28 20:55）
+
+- 用户手动放开孙 Agent 深度后，当前 profile 已创建两名直接子与一名孙 Agent，正式桌面工具均 READY、各自 open+shot 返回空白记事本；这不等于可信输入/指针联动通过。
+- 唯一后续 move 在同一 run_code 的 open 成功后返回 C# 编译错误：Sign 的 `Desk.Aborting = true;` 无法解析；没有移动成功或后截图证据，整轮停测并关闭 multi_mouse。详见[当前 profile 报告](<../../artifacts/cyble-validation-20261128/live-2c1g-20261128-1951/lead-report.md#L19-L27>)。
+- 静态边界为两个独立 Add-Type 编译单元。task-160 仅改 win32 助手：保留 volatile Aborting 与 Stopped 热路径，由 Desk.MarkAborting 同步写标记，Sign 用 CLR Action 由 PowerShell 在 signLoaded 之前显式绑定；不使用跨 UI 线程脚本块，不以异步 Emit 替代本地停止。
+- task-161 独立补生产编译块与真实 CLR 绑定/同步取消的离线行为回归。lead 只做架构、文档、diff 审核及独立运行；不清 marker/reset unknown/杀 broker/改 profile/新增服务。F1/F2/F3/F7/F8 保留。
+- 本节初稿为 20:55 的实施中状态；最终离线门禁见下一节。2 子 1 孙输入、A7–A16/Q3–Q5 仍未验收。
+
+## 46. Sign 独立编译与同步取消修复的最终门禁（2026-11-28 Asia/Shanghai）
+
+- task-160 生产补丁仅在 [win32 助手](<../../src/desktop/win32.ps1#L35-L41>) 增加 Desk.MarkAborting、Sign.Abort，并在 Sign 编译后以纯 CLR Delegate.CreateDelegate 绑定；Halt 在视觉工作前同步置位 volatile 停止标志，不以异步消息或 PowerShell 脚本块替代。不改 FIFO、unknown 阻断、marker 或 profile。
+- task-161 的 [离线夹具](<../../tests/fixtures/desktop-sign-compile.ps1>) 按生产顺序独立编译真实 Desk/Sign C#，验证委托目标与 CLR 线程调用、Halt 的同步停止及 ResetAct。首两轮夹具分别遗漏 PowerShell 的 MethodInvocationException 包装和本地化栈前缀；只精确修正这两处，保留 NullReferenceException 类型、Sign 视觉方法帧、Aborting=true、active=false 和 CLR 线程断言。额外根因检查一度用了非测试指定的外层 shell，Dictionary 引用错误不代表生产失败；显式 Windows PowerShell 5.1 证实编译通过。
+- 独立 [横幅专项](<../../artifacts/cyble-validation-20261128/sign-160-161-locale-1795872553180-special.tap#L10-L18>) 6/6 通过、0 失败/跳过；[最终 typecheck](<../../artifacts/cyble-validation-20261128/sign-160-161-locale-1795872553180-typecheck.log>) exit 0；[build](<../../artifacts/cyble-validation-20261128/sign-160-161-1795872688623-build.log>) exit 0。
+- [最终全量](<../../artifacts/cyble-validation-20261128/sign-160-161-1795872688623-full.tap#L844-L851>) 815 项、813 通过、0 失败/取消、2 跳过，50760.9453ms。跳过为 Edge/微信 live 测试；绘制 POINTER_RENDER_OK 15、动画 POINTER_ANIMATION_OK 31、生命周期 POINTER_LIFECYCLE_OK 20 通过。F3 的 orphan/marker/unknown 阻断、F7 的矛盾身份拒绝与无点坐标、F8 的 lazy 身份绑定相关回归在同轮通过；这不是当前宿主真机验收。
+- lead 只审查、文档和独立测试，实现全部由上述子 Agent 编写。阶段提交仅含生产助手、专项测试、离线夹具和本方案；本地项目卡/验收目录不夹带。真实桌面尚未恢复输入，multi_mouse 已关闭，默认 marker/unknown 未清理；下一步须确保当前宿主加载修复，再继续原 2 子 1 孙及 A7–A16/Q3–Q5 验收。

@@ -34,6 +34,12 @@ public static class Desk {
   /** Set when the user stops from the overlay, so a long press/drag in flight lets go at once (the host-facing cancel file covers a different path). */
   public static volatile bool Aborting;
   /**
+   * Sets the stop flag from the overlay's Halt. Sign is compiled as its own assembly and cannot name this class, so
+   * PowerShell binds Sign.Abort to this method once Sign has compiled; Halt calls it on its own thread, synchronously,
+   * so a long press or drag in flight sees Aborting on its next 20 ms poll and lets go.
+   */
+  public static void MarkAborting() { Aborting = true; }
+  /**
    * Whether this input reached the point(s) below, and the physical screen pixels it reached. Whether a point exists is
    * its own flag, never a coordinate value: a monitor left of the primary one gives ClientToScreen a negative X, and -1
    * there is a real place, not "no point".
@@ -983,6 +989,8 @@ public static class Sign {
 
   /** The helper's stdout, shared with the request loop: a line is written whole, under this object's lock. */
   public static StreamWriter Out;
+  /** Bound by PowerShell, after this type compiles, to Desk.MarkAborting: Halt calls it to stop the input in flight. */
+  public static Action Abort;
   static readonly Color Blue = Color.FromArgb(64, 140, 255);
   static readonly ManualResetEvent ready = new ManualResetEvent(false);
   static Layer capsule, glow, pointer;
@@ -1444,7 +1452,8 @@ public static class Sign {
   static void Halt() {
     if (!active) return;
     active = false;
-    Desk.Aborting = true;
+    Action stop = Abort;
+    if (stop != null) stop();
     Follow(); DrawCapsule();
     fade.Stop(); fade.Start();
     Emit("{\"event\":\"stop\"}");
@@ -1524,6 +1533,12 @@ public static class Sign {
     [Sign]::Out = $writer
     # A drag streams the points it passes through, for both the background and the real-pointer helper.
     [Desk]::ProgressSink = [Action[int,int]]{ param($x, $y) [Sign]::Emit('{"event":"progress","sx":' + [int]$x + ',"sy":' + [int]$y + '}') }
+    # Sign compiles as its own assembly and cannot name Desk.Aborting, so bind its Halt to Desk's flag through a pure CLR
+    # delegate over a compiled static method (never a PowerShell script block, which would cross into this runspace on
+    # the UI thread). A missing method throws here, while the sign loads, rather than a stop later failing to cancel.
+    $markAborting = ([Desk]).GetMethod('MarkAborting')
+    if ($null -eq $markAborting) { throw 'the sign cannot bind its stop to Desk.MarkAborting' }
+    [Sign]::Abort = [Action][System.Delegate]::CreateDelegate([Action], $markAborting)
     $script:signLoaded = $true
   }
   if ($a.show) {

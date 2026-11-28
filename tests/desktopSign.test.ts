@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { createDesktop, STOPPED } from '../src/desktop/desktop.ts';
 import { DEFAULT_APPEARANCE, forgetAppearance } from '../src/appearance.ts';
 import { createComputerUse } from '../src/index.ts';
@@ -124,4 +126,25 @@ test('the plugin tells the agent of a stop that cut off no step, and lets it go 
   events!('something else');
   assert.equal(halts, 1);
   await computer.stop();
+});
+
+// The sign is its own Add-Type unit: it cannot name Desk's Aborting field. Production binds Sign.Abort to a compiled
+// static method, and Halt calls that delegate synchronously before any drawing. This compiles the two real production
+// blocks with Windows PowerShell 5.1, binds them the same way, and proves the stop flag is set without a script-block
+// delegate or a PowerShell runspace. The fixture opens no window, synthesizes no input, and touches no marker/profile.
+test('the sign compiles on its own and its Halt stops the desktop through the bound CLR delegate', {
+  skip: process.platform !== 'win32' && 'requires Windows PowerShell to compile the helper',
+}, () => {
+  const source = fileURLToPath(new URL('../src/desktop/win32.ps1', import.meta.url));
+  const fixture = fileURLToPath(new URL('./fixtures/desktop-sign-compile.ps1', import.meta.url));
+  const root = process.env.SystemRoot;
+  assert.ok(root, 'Windows SystemRoot is needed to locate PowerShell');
+  const powershell = join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const result = spawnSync(powershell, [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', fixture, '-Source', source,
+  ], { windowsHide: true, encoding: 'utf8', timeout: 120_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, 'offline sign assertions failed\n' + (result.stdout ?? '') + (result.stderr ?? ''));
+  assert.equal((result.stdout ?? '').trim(), 'DESKTOP_SIGN_COMPILE_OK 5');
 });
