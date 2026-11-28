@@ -93,7 +93,20 @@ class FakeHost {
       list: () => [...this.agents.values()],
     },
     subagents: {
-      rootOf: agent => this.roots.get(agent) ?? agent,
+      // The real manager resolves a delegated child only after it publishes residency. A fake agent with no
+      // mapping and a subagent header is therefore "created before the activation exists": rootOf must throw,
+      // never fall back to the child itself (that would invent a root identity).
+      rootOf: agent => {
+        const known = this.roots.get(agent);
+        if (known) return known;
+        const header = agent.session?.header as { origin?: unknown } | undefined;
+        if (header?.origin === 'subagent') {
+          const error = new Error('agent has no active runtime owner');
+          (error as Error & { code?: string }).code = 'UNAUTHORIZED';
+          throw error;
+        }
+        return agent;
+      },
     },
     get: name => (name === 'attachments' && this.attachmentsAvailable ? this.attachmentStore() : undefined),
     on: (event, listener) => {
@@ -1610,6 +1623,254 @@ test('two live gateways never hand one agent id the same real lifetime', async (
     assert.equal(runtime.getMode('session-twin-root').enabled, true, 'the shared overlay runtime outlives both gateways');
   } finally {
     runtime.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function waitUntil(ready: () => boolean, label: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (ready()) {
+        resolve();
+        return;
+      }
+      if (Date.now() > deadline) {
+        reject(new Error(label));
+        return;
+      }
+      setTimeout(poll, 10);
+    };
+    poll();
+  });
+}
+
+test('a delegated child registers its tools before its root resolves, but never announces or runs', async () => {
+  const host = new FakeHost();
+  const mouse = new FakeMultiMouse();
+  const gateway = install(host, { multiMouse: mouse });
+  const root = host.addAgent('session-early-root');
+  const child = host.addAgent('session-early-child', { delegationDepth: 1, origin: 'subagent' });
+  const childLives = () => mouse.lives.filter(actor => actor.agentId === child.id);
+
+  await host.emit('agent/created', { agent: root });
+  await host.emit('agent/created', { agent: child });
+
+  assert.equal(host.computers.has(child.id), true, 'the runtime is created even while the root is not resolvable yet');
+  assert.ok(host.live(child).includes('computer_use'), 'the definition is registered before the root exists');
+  assert.ok(host.live(child).includes('multi_mouse'), 'an available overlay still adds multi_mouse to an unbound agent');
+  assert.deepEqual(childLives(), [], 'an unbound agent is never announced to the overlay');
+
+  const definition = host.definitionOf(child, 'computer_use');
+  await assert.rejects(definition.execute({ target: 'probe' }, { agent: child, signal: new AbortController().signal }), (error: unknown) => {
+    assert.ok(error instanceof NativeGatewayError);
+    assert.equal(error.code, 'TOOL_CONTEXT_UNAVAILABLE');
+    assert.match(error.message, /cannot resolve the calling agent's root agent/);
+    const cause = (error as NativeGatewayError & { cause?: { code?: string } }).cause;
+    assert.equal(cause?.code, 'UNAUTHORIZED', 'the host refusal is preserved as the cause');
+    return true;
+  });
+  assert.equal(host.calls.length, 0, 'an unproven call never reaches the desktop runtime');
+  assert.deepEqual(childLives(), [], 'a failed first call leaves no actor behind');
+  assert.deepEqual(mouse.released, [], 'a failed first call has nothing to release');
+
+  // The same refusal holds for a cancelled first call: it fails before the identity is bound, so actor stays 0.
+  await assert.rejects(definition.execute({ target: 'probe' }, { agent: child, signal: aborting().signal }), /cannot resolve the calling agent's root agent/);
+  assert.deepEqual(childLives(), []);
+  await gateway.dispose();
+});
+
+test('the first proven call binds the root once and concurrent calls share that caller', async () => {
+  const host = new FakeHost();
+  const mouse = new FakeMultiMouse();
+  const gateway = install(host, { multiMouse: mouse });
+  const root = host.addAgent('session-bind-root');
+  const child = host.addAgent('session-bind-child', { delegationDepth: 1, origin: 'subagent' });
+  const childLives = () => mouse.lives.filter(actor => actor.agentId === child.id);
+  await host.emit('agent/created', { agent: root });
+  await host.emit('agent/created', { agent: child });
+  host.roots.set(child, root);
+
+  const definition = host.definitionOf(child, 'computer_use');
+  await Promise.all([
+    definition.execute({ target: 'one' }, { agent: child, signal: new AbortController().signal }),
+    definition.execute({ target: 'two' }, { agent: child, signal: new AbortController().signal }),
+  ]);
+
+  assert.equal(childLives().length, 1, 'the first proven call announces the actor exactly once');
+  assert.equal(childLives()[0]!.rootAgentId, root.id);
+  assert.equal(childLives()[0]!.depth, 1);
+  assert.equal(host.calls.length, 2);
+  assert.deepEqual(host.calls[0]!.caller, host.calls[1]!.caller, 'both calls use the one bound caller');
+  assert.equal(host.calls[0]!.caller?.agentId, child.id);
+  assert.equal(host.definitionOf(child, 'computer_use'), definition, 'binding does not re-register the same definition');
+  await gateway.dispose();
+  assert.equal(mouse.released.filter(actor => actor.agentId === child.id).length, 1, 'the bound actor is released exactly once');
+});
+
+test('a root that changes after binding is refused without another call or announce', async () => {
+  const host = new FakeHost();
+  const mouse = new FakeMultiMouse();
+  const gateway = install(host, { multiMouse: mouse });
+  const root = host.addAgent('session-change-root');
+  const other = host.addAgent('session-change-other');
+  const child = host.addAgent('session-change-child', { delegationDepth: 1, origin: 'subagent' });
+  const childLives = () => mouse.lives.filter(actor => actor.agentId === child.id);
+  await host.emit('agent/created', { agent: root });
+  await host.emit('agent/created', { agent: child });
+  host.roots.set(child, root);
+  const definition = host.definitionOf(child, 'computer_use');
+  await definition.execute({ target: 'first' }, { agent: child, signal: new AbortController().signal });
+  assert.equal(host.calls.length, 1);
+  assert.equal(childLives().length, 1);
+
+  host.roots.set(child, other);
+  await assert.rejects(definition.execute({ target: 'second' }, { agent: child, signal: new AbortController().signal }), (error: unknown) => {
+    assert.ok(error instanceof NativeGatewayError);
+    assert.equal(error.code, 'TOOL_ROOT_CHANGED');
+    assert.match(error.message, /root changed since this runtime was created/);
+    return true;
+  });
+  assert.equal(host.calls.length, 1, 'a changed root never reaches the desktop');
+  assert.equal(childLives().length, 1, 'a changed root is never announced again');
+  await gateway.dispose();
+  assert.equal(mouse.released.filter(actor => actor.agentId === child.id).length, 1);
+});
+
+test('two direct children and a grandchild each bind their own identity and scoped tools', async () => {
+  const host = new FakeHost();
+  const mouse = new FakeMultiMouse();
+  const gateway = install(host, { multiMouse: mouse });
+  const root = host.addAgent('session-tree-root');
+  const first = host.addAgent('session-tree-first', { delegationDepth: 1, origin: 'subagent' });
+  const second = host.addAgent('session-tree-second', { delegationDepth: 1, origin: 'subagent' });
+  const grand = host.addAgent('session-tree-grand', { delegationDepth: 2, origin: 'subagent' });
+  await host.emit('agent/created', { agent: root });
+  for (const agent of [first, second, grand]) await host.emit('agent/created', { agent });
+  host.roots.set(first, root);
+  host.roots.set(second, root);
+  host.roots.set(grand, root);
+
+  for (const agent of [first, second, grand]) {
+    const definition = host.definitionOf(agent, 'computer_use');
+    await definition.execute({ target: agent.id }, { agent, signal: new AbortController().signal });
+  }
+  assert.equal(host.calls.length, 3);
+  const depths = host.calls.map(call => call.caller?.depth);
+  assert.deepEqual(depths, [1, 1, 2], 'each child keeps its own depth and the grandchild is deeper');
+  assert.deepEqual(host.calls.map(call => call.caller?.rootAgentId), [root.id, root.id, root.id]);
+  assert.deepEqual(host.calls.map(call => call.caller?.agentId), [first.id, second.id, grand.id]);
+  assert.deepEqual(
+    [first, second, grand].map(agent => mouse.lives.filter(actor => actor.agentId === agent.id).length),
+    [1, 1, 1],
+    'each agent is announced under its own identity, never under the root',
+  );
+  for (const agent of [first, second, grand]) {
+    assert.ok(host.live(agent).includes('computer_use'), "tools stay on the agent's own scoped service");
+  }
+  await gateway.dispose();
+});
+
+test('a runtime that answers after shutdown starts is stopped and never announced', async () => {
+  let deliver!: (computer: NativeComputer) => void;
+  const late = new Promise<NativeComputer>(resolve => {
+    deliver = resolve;
+  });
+  const host = new FakeHost();
+  const mouse = new FakeMultiMouse();
+  const gateway = install(host, { createComputer: () => late, multiMouse: mouse });
+  const child = host.addAgent('session-late-factory', { delegationDepth: 1, origin: 'subagent' });
+
+  const creation = host.emit('agent/created', { agent: child });
+  await settle();
+  await settle();
+  assert.deepEqual(host.live(child), [], 'nothing is registered until the factory answers');
+  assert.deepEqual(mouse.lives, [], 'no identity is published before the runtime exists');
+
+  const closing = gateway.dispose();
+  deliver(new FakeComputer(host, child));
+  await creation;
+  await closing;
+  assert.deepEqual(host.stops, [child.id], 'a runtime built after shutdown started is stopped, not adopted');
+  assert.equal(gateway.size(), 0);
+  assert.deepEqual(host.live(child), []);
+  assert.deepEqual(mouse.lives, []);
+});
+
+test('a refused runtime never publishes an identity', async () => {
+  const host = new FakeHost();
+  const mouse = new FakeMultiMouse();
+  const gateway = install(host, { createComputer: host.factory(false), multiMouse: mouse, log() {} });
+  const root = host.addAgent('session-refused-publish');
+  await host.emit('agent/created', { agent: root });
+  assert.deepEqual(host.live(root), []);
+  assert.deepEqual(mouse.lives, [], 'a runtime that ignores the caller is never announced');
+  assert.deepEqual(mouse.released, []);
+  await gateway.dispose();
+});
+
+test('an overlay that loads after an unbound child still adds multi_mouse without announcing it', async () => {
+  const specifier = new URL('../plugin/lib/multi-mouse-runtime.mjs', import.meta.url).href;
+  const loaded = (await import(specifier)) as {
+    getMultiMouseRuntime: (options?: { dataDir?: string }) => RealMultiMouseRuntime;
+    resetMultiMouseRuntime?: () => void;
+  };
+  const dir = scratch('late-overlay');
+  const previous = process.env.EVOCU_DATA_DIR;
+  process.env.EVOCU_DATA_DIR = dir;
+  loaded.resetMultiMouseRuntime?.();
+  const runtime = loaded.getMultiMouseRuntime({ dataDir: dir });
+  const actors: ActionActor[] = [];
+  const stop = runtime.subscribe('actor-live', payload => {
+    actors.push(actorFromAnnouncement(payload));
+  });
+  try {
+    const host = new FakeHost();
+    const root = host.addAgent('session-overlay-root');
+    const child = host.addAgent('session-overlay-child', { delegationDepth: 1, origin: 'subagent' });
+    const gateway = install(host, { multiMouse: undefined });
+    await waitUntil(() => host.live(child).includes('multi_mouse'), "the late overlay never refreshed the child's tools", 4000);
+    assert.ok(host.live(child).includes('computer_use'));
+    assert.deepEqual(actors.filter(actor => actor.agentId === child.id), [], 'an unbound child is never announced by a late overlay');
+    await gateway.dispose();
+  } finally {
+    stop();
+    loaded.resetMultiMouseRuntime?.();
+    if (previous === undefined) delete process.env.EVOCU_DATA_DIR;
+    else process.env.EVOCU_DATA_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a first call cancelled or stopped before binding leaves no actor behind', async () => {
+  const host = new FakeHost();
+  const mouse = new FakeMultiMouse();
+  const dir = scratch('stop-unbound');
+  const stopFile = join(dir, 'desktop-stopped');
+  const gateway = install(host, { multiMouse: mouse, stopFile, pollMs: 50, modeFile: false });
+  const childLives = () => mouse.lives.filter(actor => actor.agentId === 'session-stop-child');
+  try {
+    const root = host.addAgent('session-stop-root');
+    const child = host.addAgent('session-stop-child', { delegationDepth: 1, origin: 'subagent' });
+    await host.emit('agent/created', { agent: root });
+    await host.emit('agent/created', { agent: child });
+    host.roots.set(child, root);
+    const definition = host.definitionOf(child, 'computer_use');
+
+    await assert.rejects(definition.execute({ target: 'cancelled' }, { agent: child, signal: aborting().signal }), /test cancel/);
+    assert.deepEqual(childLives(), [], 'a cancelled first call binds no identity');
+
+    writeFileSync(stopFile, '');
+    await waitUntil(() => gateway.halted(), 'the stop sign was never noticed', 2000);
+    await assert.rejects(definition.execute({ target: 'stopped' }, { agent: child, signal: new AbortController().signal }), (error: unknown) => {
+      assert.ok(error instanceof NativeGatewayError);
+      assert.equal(error.code, 'TOOL_STOPPED');
+      return true;
+    });
+    assert.deepEqual(childLives(), [], 'a stopped first call binds no identity');
+    assert.equal(host.calls.length, 0);
+  } finally {
+    await gateway.dispose();
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -426,3 +426,18 @@ task-63 的 completed 仅表示首版源码交付，不表示第20节证明链�
 - 此后[完整门禁](<../../artifacts/cyble-validation-20261128/stage-149-1795851496152-full.tap#L2643-L2664>)806项中803通过、1失败、2项真机跳过，28190.622ms。唯一失败是disposed-held回归在客户端已收到orphan拒绝后，独立stdout留证尚未到达便断言lost条数；本轮取代§41绿灯成为当时最新状态，提交推送保持暂停。
 - task-150仅修[既有回归](<../../tests/desktopArbiterBroker.test.ts#L925-L979>)：从第二笔真实acquire取得socket与request id，使用现有有界Tail.next等待该socket的out/lost；lost报文不带id，不能伪造。继续精确断言orphan、lost恰1、grant恰1、该socket/request从未获grant、work未执行及无abandon。没有新增sleep、放宽错误、修改fixture/生产/仲裁语义。
 - 本节记录于修正冻结、独立复验尚未完成时；后续必须连续10轮broker专项，再以107文件SHA256、类型、构建、完整测试和pack边界为门禁，通过后仅按显式清单阶段提交至fork/cyble，提交结果以Git为准。未重试真实desktop/page输入，也未清默认marker/unknown；A7–A16与Q3–Q5仍未验收。
+
+## 43. 子 Agent 接管时序的最小修复边界（2026-11-28 18:30）
+
+- 用户已选择“实施最小修复，再继续真实验收”；仅允许现有 native 网关与对应回归的最小修改，lead 只负责架构、文档与独立验证，子 Agent 实现。此选择不授权清默认 marker、reset unknown、杀 broker、改 profile 或新增服务。
+- 当前宿主 0.2.2-rc.5 的真实顺序为 agents.create 内 serial agent/created → create 返回 → manager.resident.set → 非等待 subagent/start；旧网关在 created 中调用 rootOf，delegated Agent 的正式归属尚未建立，失败后没有再次接管。该源码链已双人独立核对，当前实例仍缺日志关联，不能称实机根因已证或 P1 通过。
+- 进一步核对发现，宿主先 tools.resolve 再 agent/pre-step，因此 pre-step 不是首轮 schema 的准备屏障；created 内等待 subagent/start 又会与 create 返回互相阻塞。这两条路线均不采用。
+- 候选最小契约：created 完成 ComputerUse 与 agent-scoped definitions 的注册；未绑定状态不构造冒名 trusted caller、不发布 actor、不执行。实际调用以精确 exec.agent、live registry 和同步 rootOf 证明正式根后，一次性绑定 root/caller；之后根变化仍拒绝，不从 header 推根，不定时重试，不新增队列或事件。只有实现与回归完成并通过独立门禁后才能称落地。
+- 保留 F1/F2 绘制与补间、F3 FIFO/unknown/marker 与错误诊断、F7 身份及物理点守卫。离线门禁为 typecheck、build、native 相关专项及全量；当前 DSH 重载由用户手动，真实 2 子 1 孙、A7–A16、Q3–Q5 仍待。
+
+## 44. Lazy 身份绑定修复的独立门禁（2026-11-28 19:20）
+
+- task-155 仅修改[native 网关](<../../src/native-tools.ts#L784-L847>)：created 时先创建并注册 agent-scoped 工具；delegated root 尚未由同步 `rootOf` 解析时保持 identity=null，不冒认 caller、不发布 actor、不执行；首次通过精确 `exec.agent`、live registry、同步 `rootOf`、signal/halted 后一次性绑定 root/caller 并发布，绑定后根变化仍以 `TOOL_ROOT_CHANGED` 拒绝。
+- task-156 仅修改[native 回归](<../../tests/nativeTools.test.ts#L1648-L1876>)，覆盖未绑定拒绝、首次并发绑定一次、root 变化、2 子 1 孙身份、工厂晚回、拒绝 runtime、overlay 晚加载与取消/停下；此前一次测试夹具误传 AbortController，已改为 `.signal` 后独立复跑。
+- 独立门禁：[最终 typecheck](<../../artifacts/cyble-validation-20261128/lazy-155-156-final-typecheck.log>) exit 0；[native 专项](<../../artifacts/cyble-validation-20261128/lazy-155-156-rerun-1795864553250.tap#L61-L68>) 60/60 通过；[build](<../../artifacts/cyble-validation-20261128/lazy-155-156-build-1795864657284.log>) exit 0；[全量](<../../artifacts/cyble-validation-20261128/lazy-155-156-full-1795864747203.tap#L843-L850>) 814 项、812 通过、0 失败/取消、2 跳过，49691.5195ms；跳过仍为 Edge/微信 live 项。git diff --check 通过。
+- 以上均为离线/假宿主或既有测试环境证据，不是当前 DSH 真机输入；未清默认 marker、未 reset/杀 broker，当前 profile 的 2 子 1 孙、A7–A16、Q3–Q5 仍待用户手动重开后验收。

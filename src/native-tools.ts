@@ -304,13 +304,26 @@ interface ToolHandle {
   fingerprint: string;
 }
 
+/** The root an agent was proven to belong to, together with the frozen trusted caller built from it exactly once. */
+interface AgentStateIdentity {
+  readonly root: NativeAgent;
+  readonly caller: TrustedCallerContext;
+}
+
 interface AgentState {
   readonly key: string;
   readonly agent: NativeAgent;
-  readonly root: NativeAgent;
   readonly tools: NativeToolsService;
-  readonly caller: TrustedCallerContext;
   readonly paths: NativeAgentPaths;
+  /** The lifetime drawn once for this state (never reused); the caller built on first proof carries it. */
+  readonly lifetime: number;
+  /**
+   * The proven identity, committed in one assignment the first time a call really resolves this agent's root. It stays
+   * null until then: a delegated child is announced before the host has entered it into the subagent tree, so its root
+   * cannot be resolved at creation. Keeping the root and the caller together means the announced actor and the caller
+   * handed to a runtime can never disagree, and `lifetime` above stays independent of it.
+   */
+  identity: AgentStateIdentity | null;
   computer: NativeComputer | null;
   readonly handles: Map<string, ToolHandle>;
   disposed: boolean;
@@ -658,9 +671,10 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
       multiMouse = factory() ?? null;
       if (multiMouse) {
         for (const state of byId.values()) {
-          // Agents that came up before the overlay did are announced now, in the same order the writer will see.
+          // Agents that came up before the overlay did are announced now, in the same order the writer will see. A
+          // child with no resolvable root yet has no identity, so announceIdentity leaves it for its first proven call.
           if (state.disposed) continue;
-          state.live = publishActorLive(state.caller);
+          announceIdentity(state);
           registerTools(state);
         }
       }
@@ -760,7 +774,14 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
     return assertComputer(await factory(paths, agent, hooks), agent);
   }
 
-  function prove(state: AgentState, exec: NativeExecution | undefined): void {
+  /**
+   * Prove the calling agent from the host's execution context and return the trusted caller it is bound to. The first
+   * call that really resolves the root commits that root and caller once and announces the actor; later calls only
+   * re-check it. Anything that fails here — a foreign or dead agent, an unresolvable or non-live root, a root that
+   * changed, a cancelled or halted call — fails before any binding or announce, so a failed call never leaves a new
+   * actor behind.
+   */
+  function prove(state: AgentState, exec: NativeExecution | undefined): TrustedCallerContext {
     if (disposing) fail('the native gateway is shutting down', 'TOOL_CONTEXT_UNAVAILABLE');
     if (state.disposed) fail('this agent\'s computer-use runtime was disposed', 'TOOL_CONTEXT_UNAVAILABLE');
     const caller = exec?.agent;
@@ -778,7 +799,9 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
     }
     if (!isAgent(root)) fail('cannot resolve the calling agent\'s root agent');
     if (agents.get(root.id) !== root) fail('the calling agent\'s root agent is not live');
-    if (root !== state.root) fail('the calling agent\'s root changed since this runtime was created', 'TOOL_ROOT_CHANGED');
+    if (state.identity) {
+      if (root !== state.identity.root) fail('the calling agent\'s root changed since this runtime was created', 'TOOL_ROOT_CHANGED');
+    }
     const signal = exec?.signal;
     if (!signal || typeof signal !== 'object' || typeof signal.aborted !== 'boolean') {
       fail('the call has no cancellation signal');
@@ -787,6 +810,40 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
     // The stop sign refuses every call: desktop input, browser tools (the agent's own browser included) and the
     // overlay toggle. Nothing runs again until the user removes the file, which releases every runtime in poll().
     if (halted) fail(STOPPED + '（停下期间不执行任何桌面操作；等用户解除后再来。）', 'TOOL_STOPPED');
+    const wasBound = state.identity !== null;
+    const bound = bindIdentity(state, root);
+    // Only the call that first bound the identity announces it; a state bound early in begin was announced there.
+    if (!wasBound) announceIdentity(state);
+    return bound;
+  }
+
+  /**
+   * Commit the proven root and the caller built from it in a single synchronous step, so a reader never sees one
+   * without the other. A state that is already bound keeps its identity and this returns the same caller. It never
+   * announces: begin announces an early bind at the point it always did, and prove announces a first-call bind above.
+   */
+  function bindIdentity(state: AgentState, root: NativeAgent): TrustedCallerContext {
+    const bound = state.identity;
+    if (bound) return bound.caller;
+    const caller: TrustedCallerContext = Object.freeze({
+      identity: 'trusted',
+      agentId: state.agent.id,
+      rootAgentId: root.id,
+      depth: depthOf(state.agent),
+      lifetime: state.lifetime,
+      sessionId: state.agent.id,
+    });
+    state.identity = { root, caller };
+    return caller;
+  }
+
+  /**
+   * Tell the overlay this agent exists, once. A state with no identity yet (a delegated child whose root was not
+   * resolvable at creation) is announced later, by its first proven call, never here without an identity.
+   */
+  function announceIdentity(state: AgentState): void {
+    if (state.live || !state.identity) return;
+    state.live = publishActorLive(state.identity.caller);
   }
 
   async function toValue(toolName: string, result: ToolResult): Promise<NativeToolValue> {
@@ -834,7 +891,7 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
 
   async function executeTool(state: AgentState, name: string, args: unknown, exec: NativeExecution): Promise<NativeToolValue> {
     try {
-      prove(state, exec);
+      const proven = prove(state, exec);
       const signal = exec.signal;
       const computer = state.computer;
       if (!computer) fail('this agent\'s computer runtime is not ready', 'TOOL_CONTEXT_UNAVAILABLE');
@@ -844,7 +901,7 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
       // The caller is built per call so it carries this call's id; identity itself was proven above, never typed by
       // the model. A runtime created before this fourth parameter existed keeps its three-argument shape.
       const caller: TrustedCallerContext = Object.freeze({
-        ...state.caller,
+        ...proven,
         ...(typeof exec.callId === 'string' && exec.callId ? { callId: exec.callId } : {}),
       });
       // Desktop actions themselves are reported by the runtime through NativeRuntimeHooks.onAction, which forwards
@@ -858,7 +915,7 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
   }
 
   async function executeMultiMouse(state: AgentState, args: unknown, exec: NativeExecution): Promise<NativeToolValue> {
-    prove(state, exec);
+    const identity = prove(state, exec);
     const input = typeof args === 'object' && args !== null ? (args as Record<string, unknown>) : {};
     for (const key of Object.keys(input)) {
       if (key !== 'enabled' && key !== 'task') fail('unknown argument "' + key + '" for multi_mouse', 'INVALID_ARGUMENT');
@@ -868,14 +925,14 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
     const task = input.task;
     if (task !== undefined && typeof task !== 'string') fail('multi_mouse "task" must be text', 'INVALID_ARGUMENT');
     const runtime = multiMouse;
-    const before = runtime && typeof runtime.getMode === 'function' ? runtime.getMode(state.root.id) : undefined;
-    publishMode(state.root.id, { enabled, ...(typeof task === 'string' ? { task } : {}) });
-    const now = runtime && typeof runtime.getMode === 'function' ? runtime.getMode(state.root.id) : undefined;
+    const before = runtime && typeof runtime.getMode === 'function' ? runtime.getMode(identity.rootAgentId) : undefined;
+    publishMode(identity.rootAgentId, { enabled, ...(typeof task === 'string' ? { task } : {}) });
+    const now = runtime && typeof runtime.getMode === 'function' ? runtime.getMode(identity.rootAgentId) : undefined;
     // The overlay owns the epoch rule (a change of task must invalidate the old pointers too); this only notices when
     // the runtime it is talking to still bumps the epoch for the switch alone.
     const wantedTask = typeof task === 'string' ? task : before?.task;
     if (before && now && before.enabled === now.enabled && wantedTask !== before.task && now.epoch <= before.epoch) {
-      log('the overlay did not bump the epoch for the task change on root "' + state.root.id + '"');
+      log('the overlay did not bump the epoch for the task change on root "' + identity.rootAgentId + '"');
     }
     const shown = now ? (now.enabled ? '已打开' : '已关闭') : (enabled ? '已打开' : '已关闭');
     const detail = now?.task ? '，任务「' + now.task + '」' : typeof task === 'string' && task ? '，任务「' + task + '」' : '';
@@ -997,10 +1054,10 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
   async function releasePointers(state: AgentState): Promise<void> {
     // A runtime that never got accepted has nothing drawn on screen; releasing it would name an actor the overlay
     // never saw.
-    if (!state.live) return;
+    if (!state.live || !state.identity) return;
     const runtime = multiMouse;
     if (!runtime || typeof runtime.publishActorDisposed !== 'function') return;
-    const actor = actorOf(state.caller);
+    const actor = actorOf(state.identity.caller);
     await settle(
       () => runtime.publishActorDisposed!(actor),
       'cannot release the pointers of agent "' + actor.agentId + '"',
@@ -1103,34 +1160,31 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
     const scoped = agent.ctx?.tools;
     if (!scoped || typeof scoped.register !== 'function') fail('agent "' + agent.id + '" has no agent-scoped tool service');
     const subagents = serviceOf<NativeSubagentsService>(ctx, 'subagents');
-    let root: unknown = undefined;
+    // Try to resolve the root now. A root agent, or a child the host has already entered into the subagent tree,
+    // resolves here and is bound exactly as the first call would bind it; begin announces it at the point it always
+    // did. A delegated child is announced before the host enters it, so rootOf throws — that is "not yet", not a
+    // failure, and the first call that can resolve it binds and announces then. No check is loosened: whatever is bound
+    // now must still be a live agent object, and a later root that differs is refused with TOOL_ROOT_CHANGED.
+    let earlyRoot: NativeAgent | null = null;
     try {
-      root = subagents?.rootOf?.(agent);
-    } catch (error) {
-      fail('cannot resolve the root agent of "' + agent.id + '"', 'TOOL_CONTEXT_UNAVAILABLE', { cause: error });
+      const root = subagents?.rootOf?.(agent);
+      if (isAgent(root) && agents.get(root.id) === root) earlyRoot = root;
+    } catch {
+      earlyRoot = null;
     }
-    if (!isAgent(root)) fail('cannot resolve the root agent of "' + agent.id + '"');
     // One lifetime per runtime, taken from the process-wide sequence: a number is never reused in this process, so a
     // new runtime of an agent id the shared overlay already retired still gets a newer lifetime and its real actions
     // are accepted, and the per-instance namespace plus a never-reused number keep the truncated name unique.
     const lifetime = nextLifetime();
     const key = agentKey(agent.id).slice(0, 48) + '-l' + lifetime;
     const paths = pathsOf(key);
-    const caller: TrustedCallerContext = Object.freeze({
-      identity: 'trusted',
-      agentId: agent.id,
-      rootAgentId: root.id,
-      depth: depthOf(agent),
-      lifetime,
-      sessionId: agent.id,
-    });
     const state: AgentState = {
       key,
       agent,
-      root,
       tools: scoped,
-      caller,
       paths,
+      lifetime,
+      identity: null,
       computer: null,
       handles: new Map(),
       disposed: false,
@@ -1139,6 +1193,7 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
       pending: false,
       teardown: null,
     };
+    if (earlyRoot) bindIdentity(state, earlyRoot);
     states.set(agent, state);
     byId.set(agent.id, state);
     try {
@@ -1174,7 +1229,9 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
       if (halted) safeDispose(() => computer.halt?.(), log);
       // Tell the overlay a trusted agent exists (its identity bus for the pointer writer); the runtime decides who
       // ends up on screen. The real cursor anchor is sampled by the C# renderer, so nothing is cached here.
-      state.live = publishActorLive(caller);
+      // Announce now only when the identity was bound above (early bind). A delegated child with no resolvable root has
+      // no identity yet, so announceIdentity leaves it for its first proven call. Never a duplicate announce.
+      announceIdentity(state);
       registerTools(state);
     } catch (error) {
       await disposeState(state);
@@ -1183,18 +1240,22 @@ export function installNativeGateway(ctx: NativeGatewayContext, options: NativeG
     return state;
   }
 
-  /** True while the state's own agent is still the live registry entry and its root agent has not changed. */
+  /**
+   * True when the state's own agent is still the live registry entry and, once a root is bound, that root has not
+   * changed. An unbound state (a delegated child whose root was not resolvable at creation) is not proof of loss — it is
+   * kept, and its root is checked against the bound one on the first call that resolves it.
+   */
   function stillOwned(state: AgentState, agents: NativeAgentsService): boolean {
     if (agents.get(state.agent.id) !== state.agent) return false;
+    if (!state.identity) return true;
     let root: unknown = undefined;
     try {
       root = serviceOf<NativeSubagentsService>(ctx, 'subagents')?.rootOf?.(state.agent);
     } catch {
       return false;
     }
-    return root === state.root;
+    return root === state.identity.root;
   }
-
   async function onCreated(payload: { agent?: unknown } | undefined): Promise<void> {
     const agent = payload?.agent;
     if (!isAgent(agent)) return;
